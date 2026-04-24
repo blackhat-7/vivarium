@@ -12,6 +12,16 @@ if [ ! -f "$HOME/.bashrc" ]; then
   git config --global pull.rebase false
 fi
 
-mkdir -p "$HOME/work"
+mkdir -p "$HOME/work" 2>/dev/null || true
+
+# warn early if bind-mount ownership is wrong, so users don't hit
+# permission-denied on first clone.
+if [ ! -w "$HOME/work" ]; then
+  cat >&2 <<EOF
+[entrypoint] WARNING: $HOME/work is not writable by uid=$(id -u).
+  fix on the host (one-time):
+      sudo chown -R \$(id -u):\$(id -g) ~/vivarium-home
+EOF
+fi
 
 exec "$@"

@@ -5,7 +5,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VIVARIUM_HOME="${VIVARIUM_HOME:-$HOME/vivarium-home}"
-mkdir -p "$VIVARIUM_HOME"
+# create both the home and the work dir on the host BEFORE the bind mount is
+# established. This guarantees they exist with the host user's ownership so
+# the in-container vivarium user (matching UID) can write to them.
+mkdir -p "$VIVARIUM_HOME/work"
 
 # Upsert keys in .env — preserve user edits, add anything missing with defaults.
 touch .env
