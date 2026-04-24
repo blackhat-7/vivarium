@@ -7,27 +7,32 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 VIVARIUM_HOME="${VIVARIUM_HOME:-$HOME/vivarium-home}"
 mkdir -p "$VIVARIUM_HOME"
 
-# Create .env with defaults only if it doesn't exist. After that, edits to
-# .env are respected — edit INSTALL_OPENCODE / INSTALL_CLAUDE to change the
-# agent set, then re-run this script to rebuild.
-if [ ! -f .env ]; then
-  cat > .env <<EOF
-HOST_UID=$(id -u)
-HOST_GID=$(id -g)
-VIVARIUM_HOME=$VIVARIUM_HOME
-INSTALL_OPENCODE=true
-INSTALL_CLAUDE=false
-EOF
-  echo "[up] created .env with defaults (opencode only). edit to change agents."
+# Upsert keys in .env — preserve user edits, add anything missing with defaults.
+touch .env
+upsert_env() {
+  local key="$1" value="$2"
+  if grep -qE "^${key}=" .env; then
+    return 0
+  fi
+  printf '%s=%s\n' "$key" "$value" >> .env
+}
+# HOST_UID/GID always sync to current user (so running as a different host user works)
+if grep -qE '^HOST_UID=' .env; then
+  sed -i.bak "s/^HOST_UID=.*/HOST_UID=$(id -u)/" .env && rm -f .env.bak
 else
-  # keep HOST_UID/GID in sync in case the user who runs this changed
-  sed -i.bak "s/^HOST_UID=.*/HOST_UID=$(id -u)/" .env
-  sed -i.bak "s/^HOST_GID=.*/HOST_GID=$(id -g)/" .env
-  rm -f .env.bak
+  echo "HOST_UID=$(id -u)" >> .env
 fi
+if grep -qE '^HOST_GID=' .env; then
+  sed -i.bak "s/^HOST_GID=.*/HOST_GID=$(id -g)/" .env && rm -f .env.bak
+else
+  echo "HOST_GID=$(id -g)" >> .env
+fi
+upsert_env VIVARIUM_HOME "$VIVARIUM_HOME"
+upsert_env INSTALL_OPENCODE true
+upsert_env INSTALL_CLAUDE false
 
 echo "[up] current agent selection:"
-grep -E '^INSTALL_(OPENCODE|CLAUDE)=' .env | sed 's/^/  /'
+grep -E '^INSTALL_(OPENCODE|CLAUDE)=' .env | sed 's/^/  /' || true
 
 echo "[up] building image (first time: ~3 min; cached: seconds)"
 docker compose build
