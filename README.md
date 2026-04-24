@@ -2,51 +2,58 @@
 
 > *a place where living things are kept*
 
-A carefully-fenced Hetzner VM where Claude Code and opencode run autonomously
-on personal projects — reading freely across repos, writing locally, never
-pushing to the cloud. The walls are made of five layers (VM, user, filesystem,
-network, credentials); escape of any single layer does not compromise the
-others.
+A Docker-based enclosure for running **opencode** and **claude-code**
+autonomously on a Linux host — reading freely across repos, writing locally,
+never pushing to the cloud. Three layers of isolation: host, container, and a
+read-only GitHub PAT. No in-app sandbox configs to maintain, no iptables
+rules on the host, no dedicated VM required.
 
-This is **not** a sandbox that claims to contain a malicious model. It is an
-enclosure sized to the realistic threat model: a well-intentioned agent that
-may be tricked, loop into a bad state, install something poisoned, or
-hallucinate destructive commands. The goal is that the worst-case incident is
-"restore yesterday's snapshot and rotate a key," not "catastrophic loss."
+The agent runs as a non-root user inside a locked-down container. Your code
+lives in a bind-mounted directory on the host (`~/vivarium-work/`). A
+fine-grained read-only PAT is the structural reason nothing ever pushes. If a
+session goes sideways, `docker compose restart` is a clean reset.
 
 ## Layout
 
 ```
 vivarium/
-├── README.md              you are here
-├── PLAN.md                the whole plan — threat model, architecture, setup, daily ops, secrets, audits
-├── CHECKLIST.md           pre-flight verification — run through this before first autopilot session
-├── configs/
-│   ├── claude-settings.json    ~/.claude/settings.json on the VM
-│   ├── opencode.json           ~/.config/opencode/opencode.json on the VM
-│   └── gitignore-global        ~/.gitignore_global on the VM
+├── README.md               you are here
+├── PLAN.md                 threat model, architecture, setup, secrets, audits
+├── CHECKLIST.md            pre-flight + post-setup verification
+├── Dockerfile              the image (ubuntu 24.04 + opencode + claude + uv + node + git)
+├── compose.yaml            runtime: mounts, user, caps, limits, restart policy
+├── entrypoint.sh           bootstraps the user home on first run
+├── .env.example            template for HOST_UID/HOST_GID
 └── scripts/
-    ├── setup-root.sh           one-time, as root: user, packages, firewall
-    ├── setup-user.sh           one-time, as `keeper`: claude/opencode install, git config
-    ├── backup.sh               cron every 2h: snapshot ~/work to ~/backup
-    └── audit.sh                cron monthly: drift check — PATs, ignore-scripts, deny rules, budget caps
+    ├── up.sh               build image + start container
+    ├── shell.sh            drop into the container
+    ├── backup.sh           host-side rsync of the work dir (cron'd every 2h)
+    └── audit.sh            host-side monthly drift check
 ```
 
 ## Quick start
 
-1. Read `PLAN.md` top to bottom once. Do not skip the threat model section.
-2. Provision the Hetzner VM (any size; 4GB RAM is plenty).
-3. Copy this repo to the VM: `scp -r vivarium root@vm:/root/`
-4. Run `scripts/setup-root.sh` as root.
-5. `su - keeper`, run `scripts/setup-user.sh`.
-6. Walk through `CHECKLIST.md`.
-7. Start working.
+```bash
+git clone https://github.com/blackhat-7/vivarium.git ~/vivarium
+cd ~/vivarium
+./scripts/up.sh              # first time: ~3 min to build
+./scripts/shell.sh           # you are now in /home/vivarium/work inside the container
 
-## Why "vivarium"
+# inside the container, one-time:
+opencode auth login          # pick provider, complete the OAuth flow
+git clone https://github.com/YOU/some-repo.git   # paste read-only PAT
+```
 
-A vivarium has glass walls (sandbox boundaries), a curated climate (allowlist),
-observable specimens (agent sessions you can `tmux attach` to), regulated
-feeding (budget caps), and a keeper who checks on it (you, via the monthly
-audit). Every piece of this project maps to one of those.
+After that, daily life is `./scripts/shell.sh` → `cd some-project` → `opencode`.
 
-The user that runs the agents is named `keeper` for the same reason.
+## Why Docker (not a dedicated VM)
+
+The original plan assumed a fresh dedicated Hetzner VM. On a VM that's
+already running Docker + Tailscale + Nix + a personal account, adding
+host-level iptables rules and a second unprivileged OS user risks conflicting
+with the host's existing setup — and dilutes the "isolated sandbox user"
+concept since you share an OS with Tailscale, Docker, etc.
+
+The container approach gives you equivalent (or better) isolation for
+realistic threats, trivial reset, and far less host pollution. See `PLAN.md`
+§2 for the full layer comparison.

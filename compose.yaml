@@ -1,0 +1,38 @@
+services:
+  vivarium:
+    build:
+      context: .
+      args:
+        UID: "${HOST_UID:-1000}"
+        GID: "${HOST_GID:-1000}"
+    image: vivarium:latest
+    container_name: vivarium
+
+    # the whole home lives on the host so auth/creds/code survive rebuilds
+    volumes:
+      - ${VIVARIUM_HOME:-${HOME}/vivarium-home}:/home/vivarium
+
+    working_dir: /home/vivarium/work
+
+    # baseline hardening — no capabilities beyond what a shell needs
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"]
+    security_opt:
+      - no-new-privileges:true
+
+    # resource limits — a runaway loop won't eat the host
+    mem_limit: 4g
+    cpus: 2.0
+    pids_limit: 512
+
+    # restart policy — autopilot friendly, survives host reboots.
+    # change to "no" if you'd rather start manually.
+    restart: unless-stopped
+
+    # long-running service; shell in with `docker compose exec vivarium bash`
+    stdin_open: true
+    tty: true
+
+    # DNS — tighten later if you want domain-level filtering
+    # dns:
+    #   - 1.1.1.1

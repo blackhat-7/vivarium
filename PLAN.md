@@ -1,500 +1,450 @@
-# The vivarium plan
+# The vivarium plan (Docker edition)
 
-A complete, opinionated plan for running Claude Code and opencode
-autonomously on a Hetzner VM for personal projects — with enough hardening
-that the blast radius of any single failure is bounded and recoverable.
+An opinionated, minimum-moving-parts setup for running opencode and claude
+code autonomously on your existing Linux host — agent in a locked-down
+container, code bind-mounted from the host, read-only GitHub PAT as the
+structural guarantee that nothing pushes.
 
-This document is long on purpose. Read it top-to-bottom once before you run
-any script. After that, `CHECKLIST.md` is the operational companion.
+Read top to bottom once before running. `CHECKLIST.md` is the post-setup
+verification drill.
 
 ---
 
-## 1. Threat model — what we defend against and what we accept
+## 1. Threat model — what we defend against, what we accept
 
-We are not trying to contain an actively malicious model. We are containing a
-well-intentioned agent that can, realistically:
+We are not trying to contain a state-actor-weaponized model. We are
+containing a well-intentioned agent that can, realistically:
 
-- **Get prompt-injected** by the content it reads — a README, a GitHub issue,
-  a web page, a dependency's source comments — and take an action inside its
-  allowed scope that you did not want.
-- **Install a poisoned dependency**. `npm install`, `pip install`, `uv sync`,
-  `cargo build` all execute third-party code at install time. In full YOLO
-  mode this runs with the same permissions as the agent.
-- **Loop into a bad state** — delete files, rewrite them into nonsense, burn
-  API budget grinding on an impossible task.
-- **Hallucinate a destructive command** — confidently `rm -rf`, `git reset
-  --hard`, `DROP TABLE`, etc., inside its write scope.
+- Get **prompt-injected** by files it reads (READMEs, issue bodies, docs,
+  dependency sources) and take an action inside its allowed scope that you
+  did not want.
+- Install a **poisoned dependency** (`npm install`, `pip install`, `uv sync`
+  all execute third-party code at install time in full YOLO mode).
+- **Loop into a bad state** — delete, rewrite into nonsense, burn quota.
+- **Hallucinate a destructive command** — `rm -rf`, `git reset --hard`,
+  `DROP TABLE`.
 
-We are **not** defending against:
+We are **not** defending against: a container-escape 0-day, Anthropic-side
+compromise exfiltrating through `api.anthropic.com`, or physical access.
 
-- A state actor with a bubblewrap 0-day targeting your Hetzner VM.
-- Claude Anthropic-side being compromised and exfiltrating through
-  `api.anthropic.com`.
-- Physical access to the VM.
-
-### What "sufficient" means here
-
-> The worst-case incident is "restore yesterday's snapshot and rotate a key."
-> It is never "I lost years of work" or "my cloud accounts got pillaged."
-
-That's the bar. Every layer below is justified by that standard, not by a
-fantasy of "100% security."
+> **What "sufficient" means**: the worst-case incident is "restore yesterday's
+> snapshot and rotate a key." Never "I lost years of work" or "my cloud
+> accounts got pillaged."
 
 ### Residual risks you are explicitly accepting
 
 | Risk | Why we accept it | Mitigation if it fires |
 |---|---|---|
-| Prompt injection causes destructive action inside `~/work` | Structural — the agent *must* be able to write to work | 2-hour rsync snapshots + local bare git mirrors |
-| Malicious postinstall in a new dep corrupts `~/work` | We disable scripts by default, but some projects need them | Snapshots + `npm ci --ignore-scripts` as first-line habit |
-| Runaway API spend | Per-session caps don't cover session-loops | Hard monthly cap set in the provider console |
-| Secret exposure to a session that used it | If the agent holds the key, it has the key | Per-project scoped keys + monthly rotation |
-| Bubblewrap sandbox escape (CVE-class) | Sandboxes have CVEs; bwrap is hardened but not perfect | OS-level firewall + unprivileged user + read-only PAT limit damage |
-
-If you are not comfortable with any row in that table, stop and revisit
-before proceeding.
+| Prompt injection causes destructive action in `~/vivarium-work` | Structural — the agent must write to work | 2-hour rsync snapshots |
+| Malicious postinstall corrupts the work dir | We disable scripts by default; some projects need them | Snapshots + `docker compose down && up` resets container state |
+| Runaway spend (pay-per-token only) | Session caps don't cover loops across sessions | Provider-console hard monthly cap. Subscriptions are rate-limited → capped |
+| Secret exposure to a session that used it | If the agent holds the key, it has the key | Per-project scoped keys + rotation |
+| Container-escape CVE (shared kernel) | Sandboxes have CVEs; Docker is hardened but not perfect | Non-root user, `cap_drop: ALL`, `no-new-privileges`, no `/var/run/docker.sock` mount |
 
 ---
 
-## 2. Architecture — the five layers
+## 2. Architecture — three layers
 
 ```
-    ┌─────────────────────────────────────────────────┐
-    │ 1. Hetzner VM                                   │  physical/network isolation
-    │                                                 │
-    │   ┌───────────────────────────────────────┐     │
-    │   │ 2. Unprivileged user `keeper`          │    │  no sudo, owns nothing outside ~/
-    │   │                                        │    │
-    │   │   ┌────────────────────────────────┐   │    │
-    │   │   │ 3. Filesystem fence            │   │    │  writes only to ~/work;
-    │   │   │   allowWrite: ~/work           │   │    │  denyWrite on ssh keys,
-    │   │   │   denyWrite:  ~/.ssh, ~/.claude│   │    │  shell init, package configs
-    │   │   │                 etc.           │   │    │
-    │   │   │   ┌──────────────────────┐     │   │    │
-    │   │   │   │ 4. Network fence     │     │   │    │  Claude sandbox allowlist +
-    │   │   │   │   domain allowlist   │     │   │    │  iptables UID-based SSH block
-    │   │   │   │   + UID iptables     │     │   │    │
-    │   │   │   │                      │     │   │    │
-    │   │   │   │   ┌───────────────┐  │     │   │    │
-    │   │   │   │   │ 5. Credentials │  │     │   │    │  fine-grained PAT,
-    │   │   │   │   │   read-only    │  │     │   │    │  contents:read only,
-    │   │   │   │   │   PAT only     │  │     │   │    │  on specific repos
-    │   │   │   │   └───────────────┘  │     │   │    │
-    │   │   │   └──────────────────────┘     │   │    │
-    │   │   └────────────────────────────────┘   │    │
-    │   └───────────────────────────────────────┘     │
-    └─────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────┐
+    │ 1. HOST (your existing Linux VM)                 │
+    │                                                  │
+    │   ┌────────────────────────────────────────┐     │
+    │   │ 2. CONTAINER `vivarium`                │     │
+    │   │    • ubuntu 24.04 base                 │     │
+    │   │    • runs as UID 1000 (non-root)       │     │
+    │   │    • cap_drop: ALL + no-new-privileges │     │
+    │   │    • no docker.sock, not privileged    │     │
+    │   │    • no SSH client useful for pushing  │     │
+    │   │    • cpu/mem/pid limits                │     │
+    │   │    • mounts only: ~/vivarium-home      │     │
+    │   │                                        │     │
+    │   │   ┌──────────────────────────┐         │     │
+    │   │   │ 3. GitHub fine-grained   │         │     │
+    │   │   │    read-only PAT         │         │     │
+    │   │   │    (contents:read only,  │         │     │
+    │   │   │     specific repos)      │         │     │
+    │   │   └──────────────────────────┘         │     │
+    │   └────────────────────────────────────────┘     │
+    └──────────────────────────────────────────────────┘
 ```
 
-Each layer independently prevents a whole class of harm. The *combination* is
-what lets you stop worrying:
+Each layer independently blocks a class of harm:
 
-- If the sandbox escapes → the user is still unprivileged.
-- If something runs as `keeper` → it still can't SSH out (iptables).
-- If it can't SSH out but finds the HTTPS github.com path → the PAT can't push.
-- If the PAT scope somehow expands → only the specific repos are exposed.
-- If the VM itself is compromised → snapshots and the keys-aren't-here-in-plaintext
-  model bound the damage.
+- Container escape → still a non-root user on the host (and your host user
+  has no write access to other users' data).
+- Something runs unexpectedly in the container → the only write-accessible
+  path outside the container is `~/vivarium-home`, which is snapshotted.
+- Agent tries to `git push` → read-only PAT returns 403 regardless of what
+  the agent does inside.
+
+### What we explicitly dropped vs. the original VM plan
+
+| Dropped | Why |
+|---|---|
+| Claude's `sandbox.filesystem` + `network` allowlist | The container namespace is the filesystem fence. The PAT is the real push blocker. Allowlist was maintenance tax with marginal extra value. |
+| UID-based host iptables rule | Docker writes its own iptables rules; our rule could conflict. Container net ns is the isolation instead. |
+| Dedicated OS user `keeper` | Container UID 1000 is the "keeper" — inside the namespace, not on the host. |
+| `netfilter-persistent`, `apt` install choreography | All baked into the image once. |
 
 ---
 
-## 3. Setup — one-time
+## 3. Setup
 
-Run the scripts in order. They are idempotent-ish; safe to re-run.
-
-### 3.1 As root on the fresh VM
+### 3.1 On the host (one time)
 
 ```bash
-# on your laptop
-scp -r ~/Documents/projects/vivarium/ root@YOUR_VM:/root/
-ssh root@YOUR_VM
-cd /root/vivarium
-bash scripts/setup-root.sh
+git clone https://github.com/blackhat-7/vivarium.git ~/vivarium
+cd ~/vivarium
+./scripts/up.sh
 ```
 
-What it does:
+`up.sh` writes `.env` with your host UID/GID, builds the image (first build:
+~3 min), and starts the container detached. It's idempotent — safe to re-run.
 
-- Creates user `keeper` (no password, no sudo).
-- Installs `bubblewrap socat tmux git curl jq iptables-persistent
-  build-essential ripgrep fd-find sqlite3 ffmpeg` — the dev deps Claude will
-  reach for often. Pre-installed so the unprivileged user never needs sudo.
-- Adds the iptables rule that blocks outbound SSH (port 22) from UID `keeper`.
-  This structurally prevents `git push` over SSH regardless of in-app guards.
-- Saves iptables rules via `netfilter-persistent` so they survive reboot.
-
-### 3.2 As `keeper` on the VM
+### 3.2 Inside the container (one time)
 
 ```bash
-sudo -iu keeper
-cd /root/vivarium   # (or wherever; it's accessible by keeper via the copy step)
-bash scripts/setup-user.sh
+./scripts/shell.sh         # drops into /home/vivarium/work
+opencode auth login        # pick provider, follow the OAuth flow
 ```
 
-What it does:
+For opencode: your subscription (Claude Pro/Max, Copilot, ChatGPT Plus/Pro)
+is the billing model. Rate limits cap runaway spend; no console config
+needed.
 
-- Installs Claude Code via the official installer.
-- Installs opencode via the official installer.
-- Copies `configs/claude-settings.json` to `~/.claude/settings.json`.
-- Copies `configs/opencode.json` to `~/.config/opencode/opencode.json`.
-- Sets up git: `core.hooksPath=/dev/null`, `core.excludesfile=~/.gitignore_global`,
-  `credential.helper=store`.
-- Drops `configs/gitignore-global` at `~/.gitignore_global`.
-- `npm config set ignore-scripts true` (after nvm install).
-- Creates `~/work/` (writable) and `~/.secrets/` (mode 700).
-- Installs `pass` for optional secret-store use.
-- Installs crons: `backup.sh` every 2h, `audit.sh` monthly.
+For claude code (optional, API-billed): `claude` on first run prompts for
+auth. If you use this, set a hard monthly cap on the key in the Anthropic
+console.
 
-### 3.3 GitHub read-only PAT — manual, do this right
+### 3.3 GitHub PAT — the structural push-blocker
 
-**The single most important step.** This is what makes "never pushes to
-cloud" structurally true rather than policy-enforced.
+The single most important step. This is what makes "never pushes" a
+structural guarantee instead of a policy hope.
 
 1. github.com → Settings → Developer settings → **Personal access tokens →
    Fine-grained tokens** → Generate new token.
 2. **Name**: `vivarium-readonly`.
-3. **Expiration**: 90 days (set a calendar reminder to rotate).
-4. **Resource owner**: your personal account.
-5. **Repository access**: **Only select repositories**. Pick the specific
-   repos you want Claude to be able to read. Do *not* choose "All
-   repositories."
-6. **Permissions → Repository permissions**:
-   - **Contents**: *Read-only*
-   - **Metadata**: *Read-only* (required)
-   - **Pull requests**: *No access*
-   - **Issues**: *No access* (or Read-only if you want Claude to see issue context)
-   - Everything else: **No access**
-7. **Permissions → Account permissions**: leave everything at **No access**.
-8. Generate, copy the token.
+3. **Resource owner**: your personal account.
+4. **Repository access**: **Only select repositories** — pick specific ones.
+   Never "All repositories."
+5. **Repository permissions** — set every row explicitly:
 
-On the VM, as `keeper`:
+   | Permission | Setting |
+   |---|---|
+   | **Metadata** | **Read** *(mandatory — GitHub requires it)* |
+   | **Contents** | **Read** *(lets you clone and pull)* |
+   | **Issues** | **Read** *(so the agent can see issue bodies)* |
+   | **Pull requests** | **Read** *(PR history / review comments)* |
+   | **Administration** | **No access** *(critical — blocks repo creation/settings)* |
+   | **Secrets** | **No access** *(critical — never grant)* |
+   | **Workflows** | **No access** *(critical — a compromised Action is a persistent backdoor)* |
+   | Everything else | **No access** |
+
+6. **Account permissions**: every single one set to **No access**. These
+   include "create gists," "email addresses," "profile" — the scariest
+   scopes.
+
+After creation the token summary should list 3–5 `Read` lines and nothing
+with `Write` or any account scope. If it shows anything more, regenerate.
+
+**Verify the token cannot push**, inside the container:
 
 ```bash
 cd ~/work
-git clone https://github.com/YOU/some-repo.git
-# when prompted for password: paste the PAT
-# credential.helper=store saves it for subsequent clones/pulls
+git clone https://github.com/YOU/some-repo.git   # paste PAT when prompted
+cd some-repo
+echo test > canary.txt && git add canary.txt && git commit -m test
+git push      # MUST fail with 403. If it succeeds, the PAT scope is wrong.
+git reset --hard HEAD~1
+rm canary.txt
 ```
 
-**Verify the token cannot push**:
+### 3.4 Backups + audit cron (on the host)
 
 ```bash
-cd ~/work/some-repo
-echo test > x && git add x && git commit -m test
-git push
-# must fail with 403; if it succeeds, the PAT scope is wrong — regenerate
+crontab -e
+
+# add:
+0 */2 * * * bash $HOME/vivarium/scripts/backup.sh >> $HOME/vivarium-backup.log 2>&1
+0 9 1 * *  bash $HOME/vivarium/scripts/audit.sh  >  $HOME/vivarium-audit.log 2>&1
 ```
 
-**Do not use classic PATs.** A classic PAT with `repo` scope can create
-repos, create gists, and bypass every assumption in this document.
-
-### 3.4 API budget caps — manual, the other critical ceiling
-
-- **Anthropic console** → Organization → Usage limits → **set a hard monthly
-  cap** on the API key the VM uses. Pick an amount whose loss you'd shrug at.
-  $50/month is a reasonable starting point for personal use.
-- If you use opencode with OpenRouter/OpenAI/etc., do the same on each
-  provider's console. **This is the only guard against session-loops burning
-  thousands of dollars overnight.**
-- Use a dedicated API key for the VM, not one you use anywhere else. If it
-  leaks, you revoke it and your laptop keeps working.
+Snapshots go to `~/vivarium-backup/hourly-HH/` (overwritten each day) and
+`~/vivarium-backup/daily-N/` (day-of-week, 7-day rolling).
 
 ---
 
 ## 4. Daily workflow
 
-From your laptop:
-
 ```bash
-ssh keeper@vm
-tmux new -s $(basename $(pwd))    # or re-attach: tmux a -t name
-cd ~/work
-git clone https://github.com/YOU/new-project.git   # or cd into an existing one
-cd new-project
+./scripts/shell.sh                # drop into the container
+cd ~/work/some-project            # or `git clone` a new one
+opencode                          # or `claude` for API-billed sessions
 ```
 
-### Interactive session
+Detached work:
 
 ```bash
-claude --dangerously-skip-permissions
-# or
+tmux new -s proj
+opencode
+# Ctrl-b d to detach
+
+# re-attach later:
+./scripts/shell.sh
+tmux a -t proj
+```
+
+Monitoring from your laptop:
+
+```bash
+ssh hetzner 'docker logs -f vivarium'
+```
+
+If a session weirds out, pick the right nuke button:
+
+| Command | What it does |
+|---|---|
+| `docker compose restart` | Restart container; home + code + auth preserved |
+| `docker compose down && ./scripts/up.sh` | Rebuild container; home + code + auth still preserved (volume persists) |
+| `docker compose down && rm -rf ~/vivarium-home/.config && ./scripts/up.sh` | Kill opencode/claude auth but keep code |
+| `docker compose down && rm -rf ~/vivarium-home && ./scripts/up.sh` | Total wipe — use only if you really mean it. Your code goes too. |
+
+---
+
+## 5. Secrets
+
+**You cannot hide secrets from an agent that uses them.** The frame isn't
+"encrypt them" — it's "minimize what each session can burn, and rotate."
+
+### Three rules
+
+1. **Per-project, scoped, capped keys.** Never an "everything" key. OpenAI
+   project-scoped with spend cap. Stripe test/restricted keys. If a provider
+   doesn't support scoping, treat its key as radioactive — consider whether
+   it belongs on this host at all.
+2. **Compartmentalize by session.** Only load the secrets the current
+   project needs. No global `~/.env`. Nothing in `~/.bashrc`.
+3. **Rotate on a cadence you'll keep.** Monthly if you have the discipline,
+   quarterly otherwise.
+
+### The recipe
+
+One `.env` per project, inside the project, mode 600. The global gitignore
+(baked into the container via entrypoint) ignores `.env*`, `*.pem`, `*.key`,
+so they can't accidentally commit.
+
+```bash
+# inside the container:
+cd ~/work/myproject
+set -a; source .env; set +a
 opencode
 ```
 
-`--dangerously-skip-permissions` is fine here — the sandbox in
-`~/.claude/settings.json` is your guard. YOLO without a sandbox is reckless;
-YOLO inside a sandbox is the design.
+### Optional upgrade: `pass`
 
-Detach: `Ctrl-b d`. Re-attach from your laptop anytime.
-
-### Headless / unattended session
+`pass` is pre-installed in the image. One GPG key, encrypted files in
+`~/.password-store/`. Setup (once):
 
 ```bash
-claude -p "implement issue #12, run tests, commit locally" \
-  --max-turns 25 --max-budget-usd 5 \
-  --dangerously-skip-permissions
+gpg --quick-generate-key "vivarium@yourname"
+pass init "vivarium@yourname"
+pass insert openai/myproject     # paste secret
 ```
 
-Log stream is at `~/.claude/projects/<path>/session-*.jsonl`. From your
-laptop:
+Use per session:
 
 ```bash
-ssh keeper@vm 'tail -f ~/.claude/projects/*/session-*.jsonl' | jq -r '.message.content[]?.text // empty'
-```
-
-### Monitoring from a phone / outside
-
-Install `tmate` on the VM (`sudo apt install tmate` during root setup) and
-run `tmate` inside a tmux session — you get a URL that opens the terminal in
-any browser. No SSH keys to fuss with from the phone.
-
----
-
-## 5. Secrets — the honest framing
-
-**You cannot hide secrets from an agent that uses them.** If the agent can
-call Stripe, the agent holds the Stripe key. Stop trying to encrypt the
-problem away.
-
-The frame is instead: **minimize what each session can burn, and rotate.**
-
-### The three rules
-
-1. **Per-project, scoped, capped keys.** Never use an "everything" key.
-   - OpenAI: project-scoped key with monthly spend cap.
-   - Stripe: restricted keys or test-mode keys, never live unrestricted.
-   - GitHub: fine-grained PAT per repo (you already have one — keep it that
-     way).
-   - If a provider doesn't support scoping or caps, treat its key as
-     radioactive. Ideally: don't put that provider on the VM at all.
-
-2. **Compartmentalize by session.** Load only the secrets the current
-   project needs. No global `~/.env`. Nothing in `~/.bashrc`.
-
-3. **Rotate on a cadence you'll actually keep.** Monthly if you have the
-   discipline, quarterly if that's realistic. Put it on a calendar. The
-   monthly `audit.sh` prints a rotation reminder.
-
-### The minimum-setup recipe (use this if nothing else)
-
-```bash
-# one secret file per project, IN the project, gitignored
-~/work/myproject/.env      # mode 600
-```
-
-The global `.gitignore` already ignores `.env*`, `*.pem`, `*.key`, so they
-cannot accidentally be committed. Load per session:
-
-```bash
-cd ~/work/myproject
-set -a; source .env; set +a
-claude --dangerously-skip-permissions
-```
-
-### The upgrade: `pass` (installed by `setup-user.sh`)
-
-`pass` is the standard Unix password manager. One binary, uses a GPG key,
-stores entries as encrypted files in `~/.password-store/`.
-
-```bash
-# one-time
-gpg --quick-generate-key "keeper@vivarium"
-pass init "keeper@vivarium"
-
-# add a secret
-pass insert openai/myproject
-
-# use in a session
 export OPENAI_API_KEY=$(pass show openai/myproject)
-claude --dangerously-skip-permissions
+opencode
 ```
 
-Benefit: secrets are encrypted at rest between sessions. They are still
-plaintext in environment variables while the session is running, and the
-agent can still read `/proc/self/environ` — so this doesn't protect against
-an active session, it protects against a cold-boot compromise. Small upgrade,
-worth the 10 minutes.
+Encrypts at rest. Still plaintext in env vars while the session runs — this
+doesn't protect against a running session, just cold storage.
 
 ### What not to bother with
 
-Vault, sops, Infisical, Doppler, 1Password CLI on the VM. All fine tools,
-all overkill at personal scale when per-project scoped keys + rotation
-already cap your downside.
+Vault, sops, Infisical, Doppler. Overkill at personal scale when per-project
+scoped keys + rotation already cap downside.
 
 ---
 
-## 6. Residual risks — what to watch for and how to recover
+## 6. Residual risks (longer form)
 
-### 6.1 Supply chain (the biggest hole)
+### 6.1 Supply chain (largest residual hole)
 
-Install-time code execution is the largest residual risk. Defenses, in order:
+`npm install`, `pip install`, `uv sync`, `cargo build` all run third-party
+code at install time as the in-container user.
 
-- **`npm config set ignore-scripts true`** (done by setup-user.sh) — stops
-  postinstall scripts by default. Individual projects that need scripts can
-  override with `npm install --ignore-scripts=false` explicitly.
-- **Prefer `uv` over `pip`**. `uv` installs from wheels by default and does
-  not execute `setup.py` for pre-built wheels. `pip install <sdist>` runs
-  arbitrary Python.
-- **Pin versions.** Commit `package-lock.json`, `uv.lock`, `Cargo.lock`,
-  `go.sum`. Review additions manually when they're from new authors.
-- **Snapshots make this recoverable.** If a bad install corrupts `~/work`,
-  the 2-hour rsync from `backup.sh` is your undo button.
+Defenses:
 
-### 6.2 Git hooks on cloned repos
+- `npm config set ignore-scripts true` is set **globally in the image**;
+  projects that need scripts opt in explicitly with `--ignore-scripts=false`.
+- Prefer `uv` over `pip` — wheels don't execute setup.py; sdists still do.
+- Pin versions. Commit lockfiles. Review additions from new authors manually.
+- **Snapshots make this recoverable**. If `~/vivarium-work` gets corrupted,
+  `rsync -a --delete ~/vivarium-backup/hourly-HH/ ~/vivarium-work/` puts it
+  back in 2 seconds.
 
-`.git/hooks/*` and `pre-commit` configs execute arbitrary code when Claude
-runs `git commit` or `git clone`. Same supply-chain class.
+### 6.2 Git hooks
 
-Defense: `git config --global core.hooksPath /dev/null` (done by
-setup-user.sh). If a project genuinely needs hooks, opt in explicitly:
-`git config core.hooksPath .git/hooks` inside that repo.
+`.git/hooks/*` and `pre-commit` execute arbitrary code on commit. Defense:
+`core.hooksPath=/dev/null` is set globally by entrypoint.sh on first run. If
+a project needs hooks, opt in inside that repo: `git config core.hooksPath
+.git/hooks`.
 
-### 6.3 Blast radius inside the write scope
+### 6.3 Blast radius inside the work dir
 
-Claude can `rm -rf ~/work/other-project-from-last-month`. The sandbox does
-not care — it's inside the allowed write scope.
+The agent can `rm -rf ~/work/old-project`. Same answer: snapshots.
 
-Defense: the 2-hour rsync snapshot at `~/backup/work-HH/` (cron'd by
-setup-user.sh) plus weekly rotation. Verify with `audit.sh`.
+### 6.4 Container escape via kernel CVE
 
-### 6.4 Exfiltration within the allowlist
+Real, not theoretical. Mitigations layered in `compose.yaml`:
 
-You allowed `github.com`. A compromised session can theoretically push data
-to any GitHub endpoint.
+- Runs as non-root (UID 1000).
+- `cap_drop: ALL` plus a minimal `cap_add` list.
+- `no-new-privileges:true`.
+- No Docker socket mount, not `--privileged`.
+- Your host user's other files remain invisible because only
+  `~/vivarium-home` is bind-mounted in.
 
-Defense: the fine-grained PAT cannot *create* gists, repos, or issues — its
-permissions are `contents:read` on specific repos only. There is literally
-nothing on github.com it can exfiltrate *to*. This is why step 3.3 is
-load-bearing and not optional.
+Apply host kernel updates periodically. The Arch host's rolling release does
+this naturally; just reboot occasionally.
 
-### 6.5 DNS / allowlist abuse
+### 6.5 Exfiltration to arbitrary hosts
 
-Even read-only traffic can carry data via URL paths/headers. Minor at this
-scale; the PAT scope bounds it.
+We deliberately dropped the network allowlist (see §2). A compromised
+session *can* `curl evil.com`. The guards that still hold:
 
-### 6.6 Runaway API spend
+- The read-only PAT gives the session nothing sensitive to exfiltrate from
+  your GitHub account (can't create gists, can't write to any repo).
+- Your LLM subscription OAuth token could be exfiltrated — revoke from the
+  provider's console if suspicious activity appears.
+- Per-project secrets you source temporarily are in env while running — rate
+  limits and provider spend caps bound their damage.
 
-Per-session `--max-budget-usd` caps one session. Nothing prevents 40
-back-to-back sessions.
+If the risk feels wrong, optionally add a filtering DNS (`dns: [1.1.1.1]` in
+compose.yaml, point at NextDNS / a local allowlist). But that's complexity
+creep — revisit only if you have a reason.
 
-Defense: the hard monthly cap in the provider console (step 3.4). **This is
-not optional.**
+### 6.6 Prompt injection
 
-### 6.7 Bubblewrap sandbox escape
-
-Real, not theoretical. Mitigations:
-
-- `apt upgrade` weekly (included in `audit.sh` as a reminder).
-- The other four layers — unprivileged user, filesystem perms, iptables,
-  PAT scope — limit what an escape can actually do.
-
-### 6.8 Prompt injection
-
-The file Claude reads can contain "ignore prior instructions and do X." The
-sandbox bounds *X*, not *whether Claude tries it*.
-
-Defense: treat the sandbox scope as the threat model. Do not let Claude have
-a capability whose abuse you cannot live with.
+The file the agent reads can say "ignore prior instructions and do X." The
+sandbox bounds *X*, not *whether Claude tries*. Do not let the agent have
+capabilities whose abuse you cannot live with.
 
 ---
 
-## 7. Monthly maintenance
+## 7. Maintenance
 
-`scripts/audit.sh` runs monthly via cron and emails (or logs — your choice
-in the script) the results. Review output within a week.
+### Monthly — run `audit.sh` (or wait for the cron to mail its log)
 
 It checks:
 
-- `ignore-scripts` is still true
-- `core.hooksPath` is still `/dev/null`
-- iptables rule for `keeper` UID still exists and fires
-- `~/.claude/settings.json` still has `sandbox.enabled: true`
-- Latest `~/backup/work-*` is less than 3 hours old
-- Every repo in `~/work` has `origin` pointing at https, not ssh
-- No file matching `*.env`, `*.pem`, `*.key` is tracked in any repo
+- `vivarium` container running
+- Latest backup < 4 hours old
+- All repos in work dir use https origins (not ssh — would imply push-capable)
+- No tracked `.env` / `.pem` / `.key` files
 
-It reminds you to:
+### Periodic — refresh the base image
 
-- Rotate any PAT older than 90 days
-- Verify budget caps in provider consoles (these can be changed outside the
-  VM, so the VM cannot truly check them — only remind you)
-- `apt upgrade` the VM
-- Prune old `~/backup/work-*` directories
+```bash
+cd ~/vivarium
+docker compose down
+docker compose build --pull
+./scripts/up.sh
+```
+
+Pulls a fresh Ubuntu 24.04, re-runs installers. Your home dir and auth
+persist across the rebuild (they live on the host).
+
+### Ad-hoc — inspect running sessions
+
+```bash
+docker logs vivarium                                # recent container output
+docker stats vivarium                               # cpu/mem usage right now
+docker compose exec vivarium ps auxf                # what's running inside
+```
 
 ---
 
 ## 8. Deliberate exclusions
 
-Things we considered and deliberately did **not** do, so you know the design
-is intentional:
+What we considered and did **not** do, so you know the design is intentional:
 
-- **Docker in the VM.** The VM is already the isolation boundary. Docker
-  inside it adds setup tax and daemon surface for marginal gain.
-- **claudebox / ccontainer wrappers.** Same reason.
-- **Vault / sops / Doppler.** Overkill at personal scale; `pass` covers 95%
-  of the value.
-- **microVM per session (firecracker, etc.).** Huge operational tax,
-  defends against threats (rootkit persistence across sessions) that the
-  snapshot strategy already covers at 1% of the complexity.
-- **Rewriting Claude's sandbox in eBPF / LSM.** No.
-- **Blocking `*.githubusercontent.com`.** We allow it because package
-  managers and `gh release download` need it; the PAT scope means this isn't
-  a meaningful exfil path.
+- **Network-layer domain allowlist.** Maintenance cost > value given PAT
+  scope does the heavy lifting. Add later if you have a reason.
+- **Rootless Docker / Podman.** Your host already runs Docker. Migration tax
+  > incremental security gain in your threat model.
+- **User-namespace remapping (`userns-remap`).** Meaningful extra protection
+  but Docker-daemon-wide config change that could affect your other
+  containers. Skip unless you're ready to own that.
+- **One container per project.** Simpler to share one. Work directory
+  distinguishes projects. Switch later if a project's deps pollute the
+  shared container.
+- **`apparmor` / `seccomp` custom profiles.** Docker's default profiles
+  already drop dangerous syscalls. Custom profiles are a project of their
+  own.
+- **HashiCorp Vault / sops / Doppler.** Overkill at personal scale.
 
 ---
 
-## 9. Incident response — when (not if) something fires
+## 9. Incident response
 
-### "Claude deleted a bunch of files in ~/work"
-
-```bash
-# find the latest clean snapshot
-ls -lt ~/backup/ | head
-# restore just one project
-rsync -a --delete ~/backup/work-14/myproject/ ~/work/myproject/
-```
-
-### "A dep looked suspicious during install"
+### "The agent deleted files in my work dir"
 
 ```bash
-# kill the session
-tmux kill-session -t proj
-# restore
-rsync -a --delete ~/backup/work-$(date +%H -d '2 hours ago')/ ~/work/
-# remove the offending package from package.json, commit-revert, and move on
+ls -lt ~/vivarium-backup/hourly-*/    # find a clean one
+rsync -a --delete ~/vivarium-backup/hourly-14/myproject/ ~/vivarium-work/myproject/
 ```
 
-### "API spend spiked"
+### "An install looked suspicious mid-session"
 
-1. Revoke the VM's API key in the provider console (takes seconds).
-2. Check the hard monthly cap is still in place. If it wasn't, set one now.
-3. Grep `~/.claude/projects/` for what the session was doing.
-4. Issue a new key scoped to the VM.
+```bash
+docker compose restart                            # nuke session state
+# optional: reset work dir to a clean backup (see above)
+```
 
-### "I think the VM is compromised"
+### "I don't trust the container right now"
 
-1. Snapshot `~/work` to your laptop over scp using a different SSH key than
-   the VM has.
-2. Destroy the VM (Hetzner → delete).
-3. Rotate every credential the VM ever held. This is why PATs and API keys
-   are scoped to the VM and nothing else.
-4. Provision fresh. The whole setup is scripted; rebuild is < 20 minutes.
+```bash
+docker compose down
+docker rmi vivarium:latest                        # force rebuild from scratch
+./scripts/up.sh
+```
+
+Your `~/vivarium-home/` code and auth survive. Rebuild is ~3 min.
+
+### "I don't trust the HOST right now"
+
+Different problem. The vivarium design doesn't protect the host from the
+host being compromised by other means. If it's this bad: snapshot
+`~/vivarium-home/` off-host immediately, then rotate every credential the
+host touched, then investigate.
+
+### "API spend spiked" (pay-per-token only)
+
+1. Revoke the VM's API key in provider console.
+2. Verify the hard monthly cap exists; if not, set one now.
+3. `docker logs vivarium | tail -n 500` to see what it was doing.
+4. Issue a new scoped key.
 
 ---
 
 ## 10. What "done" looks like
 
-You have finished setting up when:
+Setup is complete when:
 
-- [ ] `CHECKLIST.md` passes end-to-end
-- [ ] You have started, detached from, and re-attached to a tmux session
-  running `claude --dangerously-skip-permissions` at least once
-- [ ] A test `git push` from inside `~/work` failed with 403 (PAT is read-only)
-- [ ] A test `ssh you@somehost` from `keeper` failed (iptables rule fires)
-- [ ] `~/backup/work-*` has at least one snapshot
-- [ ] Budget caps are set in the Anthropic console (and any other provider
-  consoles you use)
+- [ ] `./scripts/up.sh` completes; `docker ps` shows `vivarium` running
+- [ ] `./scripts/shell.sh` drops you into `/home/vivarium/work`
+- [ ] `opencode auth login` succeeded with your subscription provider
+- [ ] A test `git clone` over HTTPS works inside the container
+- [ ] A test `git push` fails with 403 (PAT is read-only)
+- [ ] Backup cron added; `scripts/backup.sh` run manually produced a
+  snapshot under `~/vivarium-backup/`
+- [ ] For pay-per-token providers: monthly cap set in provider console
 
-After that, the ongoing loop is: start sessions, detach, come back, review
-diffs, push from your laptop (not the VM), repeat. Every month, read the
-audit output.
+After that, the loop is: shell in, work, detach, come back, review diffs
+*from your laptop*, push from your laptop. Every month, read the audit log.
 
 Enjoy the vivarium.

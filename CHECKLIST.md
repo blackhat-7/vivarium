@@ -1,43 +1,45 @@
 # Pre-flight and post-setup checklist
 
-Walk through this once. When every box is checked, the vivarium is ready.
+Walk through once. When every box is checked, the vivarium is ready.
 
-## Before running any script
+## Before running anything
 
-- [ ] You have a fresh Hetzner VM (any size, Ubuntu 22.04+ or Debian 12+).
-- [ ] You can SSH in as root.
-- [ ] You have read `PLAN.md` §1 (threat model) and §6 (residual risks).
-- [ ] You accept the residual-risks table. If not, stop.
+- [ ] Host has Docker installed and you can run `docker ps` without sudo.
+- [ ] You've read `PLAN.md` §1 (threat model) and §6 (residual risks).
+- [ ] You accept the residual-risks table. If not, stop and rethink.
 
-## After `scripts/setup-root.sh`
+## After `./scripts/up.sh`
 
-- [ ] User `keeper` exists: `id keeper`
-- [ ] `keeper` has no sudo: `sudo -u keeper sudo whoami` fails
-- [ ] Dev packages installed: `which bubblewrap socat tmux rg fd jq sqlite3 ffmpeg`
-- [ ] iptables rule exists: `iptables -L OUTPUT -v | grep owner`
-- [ ] iptables rule survives reboot: `systemctl is-enabled netfilter-persistent`
+- [ ] `.env` was created with your host UID/GID: `cat .env`
+- [ ] Image built: `docker images | grep vivarium`
+- [ ] Container running: `docker ps | grep vivarium`
+- [ ] `~/vivarium-home/` exists on the host
+- [ ] `./scripts/shell.sh` drops you into a bash prompt at `/home/vivarium/work`
 
-## After `scripts/setup-user.sh` (as `keeper`)
+## Inside the container — one-time setup
 
-- [ ] `claude --version` prints a version
 - [ ] `opencode --version` prints a version
-- [ ] `~/.claude/settings.json` exists and has `"enabled": true` under `sandbox`
-- [ ] `~/.config/opencode/opencode.json` exists
-- [ ] `git config --global --get core.hooksPath` → `/dev/null`
-- [ ] `git config --global --get core.excludesfile` → `/home/keeper/.gitignore_global`
-- [ ] `npm config get ignore-scripts` → `true`
-- [ ] `~/work` and `~/.secrets` exist; `~/.secrets` is mode 700
-- [ ] Cron installed: `crontab -l` shows backup.sh and audit.sh entries
+- [ ] `claude --version` prints a version (or errored cleanly during image build; optional)
+- [ ] `opencode auth login <provider>` completed; auth stored under `~/.config/opencode/`
+- [ ] `git config --global --get core.hooksPath` returns `/dev/null`
+- [ ] `npm config get ignore-scripts` returns `true`
 
 ## GitHub PAT verification (the critical one)
 
 - [ ] Token generated as **fine-grained**, not classic
-- [ ] Token expiration is set (not "no expiration")
-- [ ] Token scope: **only select repositories**, not all
-- [ ] Token permissions: only **contents: read** and **metadata: read**
-- [ ] Test clone over HTTPS works
-- [ ] Test push fails with 403:
+- [ ] Repository access: **only select repositories**, not "all repositories"
+- [ ] Repository permissions — **Read only on**: Metadata, Contents, Issues, Pull requests
+- [ ] Repository permissions — **No access on** (critical): Administration, Secrets, Workflows, Actions, Deployments, Environments, Variables, Webhooks, Pages, Dependabot, Security advisories, everything else
+- [ ] **Account permissions**: every single one set to **No access**
+- [ ] Token summary screen shows 3–5 `Read` lines and nothing with `Write` or any account scope
 
+- [ ] Test clone works over HTTPS (inside the container):
+  ```bash
+  cd ~/work
+  git clone https://github.com/YOU/SOMEREPO.git
+  ```
+
+- [ ] Test push fails with 403:
   ```bash
   cd ~/work/SOMEREPO
   echo vivarium-test > canary.txt
@@ -47,45 +49,40 @@ Walk through this once. When every box is checked, the vivarium is ready.
   rm -f canary.txt
   ```
 
-## Network fence verification
+## Spend caps (outside the VM — container can't verify these)
 
-- [ ] SSH out from `keeper` is blocked:
+Pick the row that matches your provider:
 
-  ```bash
-  ssh -o ConnectTimeout=5 git@github.com    # MUST fail
-  ```
+### Subscription (Claude Pro/Max, Copilot, ChatGPT Plus/Pro) — default
 
-- [ ] HTTPS to github.com works:
+- [ ] `opencode auth login <provider>` completed
+- [ ] You know where to revoke if anything goes wrong (see PLAN.md §3)
+- [ ] Rate limits are your spending cap — nothing else to do
 
-  ```bash
-  curl -sI https://github.com | head -1     # MUST return 200/301
-  ```
+### Pay-per-token API (Anthropic API direct, OpenRouter, OpenAI API, Gemini billed)
 
-- [ ] Arbitrary HTTPS is blocked by Claude's sandbox (test inside a Claude
-  session by asking it to `curl https://example.com` — must be denied).
+- [ ] Hard monthly cap set in the provider console
+- [ ] The VM's API key is dedicated (not shared with your laptop)
+- [ ] First session tested with a small budget limit before raising
 
-## Budget caps (done in provider consoles — VM can't verify these)
+## Backups (on the host)
 
-- [ ] Anthropic: hard monthly cap set on the VM's API key
-- [ ] OpenRouter / OpenAI / other opencode providers: same
-- [ ] VM's API keys are dedicated to the VM, not shared with your laptop
+- [ ] Cron entries installed: `crontab -l` shows `backup.sh` and `audit.sh`
+- [ ] Initial backup run: `bash ~/vivarium/scripts/backup.sh`
+- [ ] `~/vivarium-backup/hourly-HH/` exists and mirrors `~/vivarium-work/`
 
-## Backup verification
+## Container hardening verification
 
-- [ ] Do a dummy write in `~/work` and force a backup: `bash ~/vivarium/scripts/backup.sh`
-- [ ] `ls ~/backup/` shows a directory named `work-HH`
-- [ ] `ls ~/backup/work-HH/` contains your dummy write
+- [ ] Non-root user inside: `docker exec vivarium id` → `uid=<your host uid>`, not 0
+- [ ] `no-new-privileges` active: `docker inspect vivarium | grep NoNewPrivileges` → `true`
+- [ ] Caps dropped: `docker inspect vivarium -f '{{.HostConfig.CapDrop}}'` → `[ALL]`
+- [ ] No `/var/run/docker.sock` mounted: `docker inspect vivarium | grep docker.sock` → nothing
+- [ ] Resource limits applied: `docker stats vivarium` shows memory cap
 
-## Tmux / re-attach drill
+## Full-loop drill
 
-- [ ] Start a session: `tmux new -s demo`
-- [ ] Inside it: `claude --dangerously-skip-permissions`, send it a tiny task
-- [ ] Detach: `Ctrl-b d`
-- [ ] From your laptop (new SSH): `ssh keeper@vm -t tmux a -t demo`
-- [ ] You see the running session
+- [ ] Start a tmux session inside, launch `opencode`, give it a tiny task, detach
+- [ ] From your laptop, re-attach via `ssh hetzner -t 'cd vivarium && ./scripts/shell.sh'` then `tmux a`
+- [ ] Session resumes cleanly
 
-When every box is checked, you're done. Put a calendar reminder:
-
-- [ ] **90 days from now**: rotate GitHub PAT
-- [ ] **First of every month**: read `~/vivarium/audit.log` output
-- [ ] **Every 2 weeks**: `ssh keeper@vm 'sudo apt update && sudo apt upgrade'` (yes this needs sudo — add a narrow sudoers rule for `apt` only, or ssh as root for this one task)
+When every box is checked, you're done.
