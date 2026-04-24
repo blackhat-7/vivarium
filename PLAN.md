@@ -99,8 +99,16 @@ cd ~/vivarium
 ./scripts/up.sh
 ```
 
-`up.sh` writes `.env` with your host UID/GID, builds the image (first build:
-~3 min), and starts the container detached. It's idempotent — safe to re-run.
+`up.sh` writes `.env` with your host UID/GID and default agent selection
+(opencode only), builds the image (first build: ~3 min), and starts the
+container detached. It's idempotent — safe to re-run.
+
+**Agent selection**: by default the image bakes in `opencode`. To also bake
+in `claude` code, edit `.env` and set `INSTALL_CLAUDE=true`, then re-run
+`./scripts/up.sh` (it rebuilds with the new args). At least one of
+`INSTALL_OPENCODE` / `INSTALL_CLAUDE` must be true — if both are false or
+either install fails mid-build, the build stops with a `[FATAL]` message
+pointing at the flag to flip.
 
 ### 3.2 Inside the container (one time)
 
@@ -415,6 +423,18 @@ docker rmi vivarium:latest                        # force rebuild from scratch
 ```
 
 Your `~/vivarium-home/` code and auth survive. Rebuild is ~3 min.
+
+### "Get vivarium off my host entirely"
+
+```bash
+./scripts/remove.sh                  # reversible: container+image+cron, data preserved
+./scripts/remove.sh --data           # also delete ~/vivarium-home (code + auth)
+./scripts/remove.sh --backups        # also delete ~/vivarium-backup + logs
+./scripts/remove.sh --everything     # all of the above + delete the repo dir itself
+./scripts/remove.sh --dry-run        # preview without changing anything
+```
+
+All flags combinable with `--yes` to skip confirmation. See `./scripts/remove.sh --help`.
 
 ### "I don't trust the HOST right now"
 

@@ -5,6 +5,8 @@ services:
       args:
         UID: "${HOST_UID:-1000}"
         GID: "${HOST_GID:-1000}"
+        INSTALL_OPENCODE: "${INSTALL_OPENCODE:-true}"
+        INSTALL_CLAUDE: "${INSTALL_CLAUDE:-false}"
     image: vivarium:latest
     container_name: vivarium
 

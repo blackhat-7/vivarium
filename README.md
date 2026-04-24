@@ -27,6 +27,9 @@ vivarium/
 └── scripts/
     ├── up.sh               build image + start container
     ├── shell.sh            drop into the container
+    ├── remove.sh           tear down — container, image, cron; optional flags nuke data/backups/repo
+    ├── cron-install.sh     add backup-every-2h + audit-monthly entries to your crontab
+    ├── cron-uninstall.sh   remove them
     ├── backup.sh           host-side rsync of the work dir (cron'd every 2h)
     └── audit.sh            host-side monthly drift check
 ```

@@ -4,6 +4,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
+# which agent CLIs to install — controlled from .env / compose build args.
+# at least one must be true; validation below fails fast if both are false.
+ARG INSTALL_OPENCODE=true
+ARG INSTALL_CLAUDE=false
+
+RUN if [ "$INSTALL_OPENCODE" != "true" ] && [ "$INSTALL_CLAUDE" != "true" ]; then \
+      echo "[FATAL] at least one of INSTALL_OPENCODE / INSTALL_CLAUDE must be true" >&2 ; \
+      exit 1 ; \
+    fi
+
 # system tools — everything the agent is likely to reach for
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git openssh-client \
@@ -26,20 +36,27 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/
 
-# opencode — primary agent for subscription-based use
-RUN curl -fsSL https://opencode.ai/install | bash \
-    && ( cp /root/.opencode/bin/opencode /usr/local/bin/opencode 2>/dev/null \
-      || cp /root/.local/bin/opencode    /usr/local/bin/opencode 2>/dev/null \
-      || cp "$(find /root -name opencode -type f -executable 2>/dev/null | head -1)" /usr/local/bin/opencode ) \
-    && chmod +x /usr/local/bin/opencode \
-    && opencode --version
+# opencode — install iff INSTALL_OPENCODE=true, fail hard on error
+RUN if [ "$INSTALL_OPENCODE" = "true" ]; then \
+      ( curl -fsSL https://opencode.ai/install | bash \
+        && ( cp /root/.opencode/bin/opencode /usr/local/bin/opencode 2>/dev/null \
+          || cp /root/.local/bin/opencode    /usr/local/bin/opencode 2>/dev/null \
+          || cp "$(find /root -name opencode -type f -executable 2>/dev/null | head -1)" /usr/local/bin/opencode ) \
+        && chmod +x /usr/local/bin/opencode \
+        && opencode --version ) \
+      || ( echo "[FATAL] opencode install failed. set INSTALL_OPENCODE=false in .env to skip." >&2 && exit 1 ); \
+    else \
+      echo "[skip] INSTALL_OPENCODE=false — skipping opencode" ; \
+    fi
 
-# claude code — optional secondary agent for API-key sessions
-RUN ( curl -fsSL https://code.claude.com/install.sh | bash \
-    && ( cp /root/.local/bin/claude /usr/local/bin/claude 2>/dev/null \
-      || cp "$(find /root -name claude -type f -executable 2>/dev/null | head -1)" /usr/local/bin/claude ) \
-    && chmod +x /usr/local/bin/claude \
-    && claude --version ) || echo "[dockerfile] claude code install failed — optional, continuing"
+# claude code — install iff INSTALL_CLAUDE=true via npm, fail hard on error
+RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
+      ( npm install -g --ignore-scripts=false @anthropic-ai/claude-code \
+        && claude --version ) \
+      || ( echo "[FATAL] claude-code install failed. set INSTALL_CLAUDE=false in .env to skip." >&2 && exit 1 ); \
+    else \
+      echo "[skip] INSTALL_CLAUDE=false — skipping claude code" ; \
+    fi
 
 # skeleton that gets copied to /home/vivarium on first run
 RUN mkdir -p /opt/vivarium/skel \
