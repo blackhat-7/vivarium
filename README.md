@@ -49,6 +49,10 @@ git clone https://github.com/YOU/some-repo.git   # paste read-only PAT
 
 After that, daily life is `./scripts/shell.sh` → `cd some-project` → `opencode`.
 
+## For agents working on this repo
+
+See `AGENTS.md`. Red lines are non-negotiable.
+
 ## Why Docker (not a dedicated VM)
 
 The original plan assumed a fresh dedicated Hetzner VM. On a VM that's
