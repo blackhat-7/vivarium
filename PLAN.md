@@ -163,12 +163,13 @@ rm canary.txt
 ### 3.4 Backups + audit cron (on the host)
 
 ```bash
-crontab -e
-
-# add:
-0 */2 * * * bash $HOME/vivarium/scripts/backup.sh >> $HOME/vivarium-backup.log 2>&1
-0 9 1 * *  bash $HOME/vivarium/scripts/audit.sh  >  $HOME/vivarium-audit.log 2>&1
+./scripts/cron-install.sh     # backup every 2h + audit monthly
+./scripts/cron-uninstall.sh   # remove them later if you want
 ```
+
+Both are idempotent. `cron-install.sh` replaces any existing vivarium
+entries and leaves unrelated crontab lines alone. `cron-uninstall.sh` only
+touches vivarium lines — your backup directory and log files are untouched.
 
 Snapshots go to `~/vivarium-backup/hourly-HH/` (overwritten each day) and
 `~/vivarium-backup/daily-N/` (day-of-week, 7-day rolling).
