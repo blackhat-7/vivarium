@@ -191,8 +191,16 @@ adding more. Off by default. To enable:
 ```bash
 # in .env
 INSTALL_BESTIARY=true
-BESTIARY_REF=v0.1.0      # pin to a tag; "main" floats with upstream
+BESTIARY_REF=main          # or a tag like "v0.1.0", or a commit SHA
 ```
+
+`BESTIARY_REF` accepts a branch, tag, or SHA. `scripts/update.sh`
+resolves branch/tag refs to a commit SHA before passing to docker — that
+way the layer cache key tracks the upstream commit. Without resolution,
+docker hits cache on the literal string `main` forever and bestiary
+updates never propagate. Pin to a tag if you want stricter
+reproducibility; track `main` if you want each `update.sh` to pull the
+latest.
 
 Then `./scripts/up.sh` rebuilds with bestiary baked in. Inside the
 container the binary is `bestiary` (`bestiary list` to confirm). Point the
@@ -394,17 +402,41 @@ It checks:
 - All repos in work dir use https origins (not ssh — would imply push-capable)
 - No tracked `.env` / `.pem` / `.key` files
 
-### Periodic — refresh the base image
+### Whenever you push new code — `./scripts/update.sh`
 
 ```bash
 cd ~/vivarium
-docker compose down
+./scripts/update.sh
+```
+
+Fast-forwards `main` from origin and rebuilds the image if there were any
+new commits. Refuses to run if your working tree is dirty. Skips the
+rebuild entirely if you're already at the latest commit.
+
+Persistent state in `~/vivarium-home/` (auth, code, configs) survives the
+rebuild — that directory is a bind mount from the host, untouched by image
+changes. In-container processes (opencode sessions, tmux) **are** killed.
+
+If you've enabled new optional features in `.env` (e.g. flipping
+`INSTALL_BESTIARY=true`), edit `.env` first, then run `update.sh`.
+
+To pull a fresh bestiary when tracking `main`: just run `update.sh`. It
+resolves `main` → current commit SHA before building, so the docker
+layer cache invalidates the moment upstream moves.
+
+### Periodic — refresh the base image
+
+`update.sh` doesn't pull a fresh Ubuntu — it relies on Docker's layer
+cache. Once a quarter or so:
+
+```bash
+cd ~/vivarium
 docker compose build --pull
 ./scripts/up.sh
 ```
 
-Pulls a fresh Ubuntu 24.04, re-runs installers. Your home dir and auth
-persist across the rebuild (they live on the host).
+`--pull` re-fetches the base image, picking up Ubuntu's cumulative
+security updates beyond what `apt-get update` inside the build catches.
 
 ### Ad-hoc — inspect running sessions
 

@@ -26,6 +26,7 @@ vivarium/
 ├── .env.example            template for HOST_UID/HOST_GID
 └── scripts/
     ├── up.sh               build image + start container
+    ├── update.sh           pull latest code from origin and rebuild (preserves ~/vivarium-home)
     ├── shell.sh            drop into the container
     ├── remove.sh           tear down — container, image, cron; optional flags nuke data/backups/repo
     ├── cron-install.sh     add backup-every-2h + audit-monthly entries to your crontab
