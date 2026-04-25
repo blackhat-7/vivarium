@@ -1,16 +1,39 @@
 #!/bin/bash
 # vivarium container entrypoint — bootstraps the user home from /opt/vivarium/skel
-# the first time the container sees an empty (freshly bind-mounted) /home/vivarium.
+# on first run, and re-applies safety-critical config every container start.
+# See PLAN.md §6.2 (hooks) and §6.7 (persistence vectors).
 
 set -e
 
+# First-run only: lay down the skel files. Re-runs preserve user edits.
 if [ ! -f "$HOME/.bashrc" ]; then
   cp -rn /opt/vivarium/skel/. "$HOME/" 2>/dev/null || true
-  git config --global core.hooksPath /dev/null
-  git config --global credential.helper store
-  git config --global init.defaultBranch main
-  git config --global pull.rebase false
 fi
+
+# Migrate: an earlier skel prepended $HOME/.local/bin to PATH, where a
+# planted ~/.local/bin/git would shadow the real /usr/bin/git for every
+# subsequent shell. Rewrite to append instead — user-local installs
+# (pip --user, uvx, pipx) still resolve, but system binaries win.
+# Idempotent: no-op if the line is already in safe form or absent.
+sed -i 's|^export PATH="\$HOME/\.local/bin:\$PATH"$|export PATH="$PATH:$HOME/.local/bin"|' "$HOME/.bashrc" 2>/dev/null || true
+
+# Always re-apply safety-critical git config. A compromised agent can
+# flip these between starts to re-enable git hooks or swap in a
+# credential helper that persists/exfiltrates the PAT. unset-then-set
+# guards against `git config --add` shadowing ours with a second entry.
+# Idempotent.
+for k in core.hooksPath credential.helper init.defaultBranch pull.rebase; do
+  git config --global --unset-all "$k" 2>/dev/null || true
+done
+git config --global core.hooksPath /dev/null
+git config --global credential.helper 'cache --timeout=86400'
+git config --global init.defaultBranch main
+git config --global pull.rebase false
+
+# Migrate from the old `store` helper: any plaintext PAT at
+# ~/.git-credentials would otherwise stay agent-readable forever even
+# after switching helpers, and would be copied into every backup.
+[ -f "$HOME/.git-credentials" ] && rm -f "$HOME/.git-credentials"
 
 mkdir -p "$HOME/work" 2>/dev/null || true
 

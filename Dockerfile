@@ -19,9 +19,12 @@ RUN if [ "$INSTALL_OPENCODE" != "true" ] && [ "$INSTALL_CLAUDE" != "true" ]; the
       exit 1 ; \
     fi
 
-# system tools — everything the agent is likely to reach for
+# system tools — everything the agent is likely to reach for.
+# openssh-client is deliberately omitted: the read-only PAT is the structural
+# push-blocker only over HTTPS; an SSH key the user (or a confused agent)
+# drops in ~/.ssh would silently bypass it. PLAN.md §2 architecture box.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl wget git openssh-client \
+      ca-certificates curl wget git \
       tmux vim nano less \
       build-essential pkg-config \
       ripgrep fd-find jq sqlite3 \
@@ -77,10 +80,14 @@ RUN if [ "$INSTALL_BESTIARY" = "true" ]; then \
       echo "[skip] INSTALL_BESTIARY=false — skipping bestiary" ; \
     fi
 
-# skeleton that gets copied to /home/vivarium on first run
+# skeleton that gets copied to /home/vivarium on first run.
+# $HOME/.local/bin is *appended* to PATH (not prepended): user-local
+# installs (pip --user, uvx, pipx, cargo) resolve, but a planted
+# ~/.local/bin/git cannot shadow /usr/bin/git for future shells. See
+# PLAN.md §6.7.
 RUN mkdir -p /opt/vivarium/skel \
  && printf '%s\n' \
-      'export PATH="$HOME/.local/bin:$PATH"' \
+      'export PATH="$PATH:$HOME/.local/bin"' \
       'alias ll="ls -la"' \
       'alias g=git' \
       'alias gs="git status"' \

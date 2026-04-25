@@ -22,6 +22,7 @@ Walk through once. When every box is checked, the vivarium is ready.
 - [ ] `claude --version` prints a version (or errored cleanly during image build; optional)
 - [ ] `opencode auth login <provider>` completed; auth stored under `~/.config/opencode/`
 - [ ] `git config --global --get core.hooksPath` returns `/dev/null`
+- [ ] `git config --global --get credential.helper` returns `cache --timeout=86400`
 - [ ] `npm config get ignore-scripts` returns `true`
 - [ ] If `INSTALL_BESTIARY=true`: `bestiary list` prints registered tools (one line per tool)
 - [ ] If `INSTALL_BESTIARY=true`: `~/.config/opencode/opencode.json` has a `mcp.bestiary` entry (auto-wired by entrypoint on first start)
@@ -81,6 +82,7 @@ Pick the row that matches your provider:
 - [ ] Caps dropped: `docker inspect vivarium -f '{{.HostConfig.CapDrop}}'` → `[ALL]`
 - [ ] No `/var/run/docker.sock` mounted: `docker inspect vivarium | grep docker.sock` → nothing
 - [ ] Resource limits applied: `docker stats vivarium` shows memory cap
+- [ ] No SSH client: `docker exec vivarium bash -c 'command -v ssh'` returns empty/nonzero
 
 ## Full-loop drill
 

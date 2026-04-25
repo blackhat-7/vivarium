@@ -29,4 +29,14 @@ if [[ "$(date +%H)" == "03" ]]; then
   rsync -a --delete --link-dest="$HOUR_SLOT" "$HOUR_SLOT/" "$DAY_SLOT/"
 fi
 
+# once a week (Sunday 03:00), keep a rolling 8-week slot. Catches a slow
+# compromise that has poisoned the daily lineage before discovery —
+# without this, a >7-day quiet compromise leaves no clean ground to
+# restore from. 10# forces base-10 to handle leading-zero week numbers.
+if [[ "$(date +%H)" == "03" ]] && [[ "$(date +%u)" == "7" ]]; then
+  WEEK_SLOT="$DEST_ROOT/weekly-$(( 10#$(date +%V) % 8 + 1 ))"
+  echo "[$(date -Iseconds)] weekly snapshot -> $WEEK_SLOT"
+  rsync -a --delete --link-dest="$HOUR_SLOT" "$HOUR_SLOT/" "$WEEK_SLOT/"
+fi
+
 echo "[$(date -Iseconds)] done"

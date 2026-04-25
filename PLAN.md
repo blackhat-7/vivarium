@@ -168,6 +168,12 @@ git reset --hard HEAD~1
 rm canary.txt
 ```
 
+**PAT storage**: the entered token lives in `git-credential-cache--daemon`
+memory (24h timeout since last use), not on disk. No
+`~/.git-credentials` file for an idle agent to `cat`, nothing in
+backups. After a day of inactivity the next git op prompts for re-paste.
+See §6.7.
+
 ### 3.4 Backups + audit cron (on the host)
 
 ```bash
@@ -179,8 +185,12 @@ Both are idempotent. `cron-install.sh` replaces any existing vivarium
 entries and leaves unrelated crontab lines alone. `cron-uninstall.sh` only
 touches vivarium lines — your backup directory and log files are untouched.
 
-Snapshots go to `~/vivarium-backup/hourly-HH/` (overwritten each day) and
-`~/vivarium-backup/daily-N/` (day-of-week, 7-day rolling).
+Snapshots go to `~/vivarium-backup/hourly-HH/` (overwritten each day),
+`~/vivarium-backup/daily-N/` (day-of-week, 7-day rolling), and
+`~/vivarium-backup/weekly-N/` (8-slot, ~56-day rolling, refreshed
+Sunday 03:00). The weekly tier exists so a slow compromise that has
+poisoned the daily lineage before discovery still has clean ground to
+restore from.
 
 ### 3.5 MCP servers (optional)
 
@@ -353,9 +363,14 @@ Defenses:
 ### 6.2 Git hooks
 
 `.git/hooks/*` and `pre-commit` execute arbitrary code on commit. Defense:
-`core.hooksPath=/dev/null` is set globally by entrypoint.sh on first run. If
-a project needs hooks, opt in inside that repo: `git config core.hooksPath
-.git/hooks`.
+`core.hooksPath=/dev/null` is re-applied globally by entrypoint.sh on
+**every container start** (not just first-run), so an agent that flips
+it to point at a malicious script can't keep the change across a
+restart. The monthly audit also flags per-repo `core.hooksPath`,
+`core.fsmonitor`, `core.editor`, `core.pager`, and `core.sshCommand`
+overrides — all are agent-writable persistence vectors that bypass the
+global setting. If a project legitimately needs hooks, opt in inside
+that repo: `git config core.hooksPath .git/hooks`.
 
 ### 6.3 Blast radius inside the work dir
 
@@ -397,6 +412,37 @@ The file the agent reads can say "ignore prior instructions and do X." The
 sandbox bounds *X*, not *whether Claude tries*. Do not let the agent have
 capabilities whose abuse you cannot live with.
 
+### 6.7 Persistence vectors inside `~/vivarium-home`
+
+A compromised agent can write anywhere in the bind mount, including
+files read by every future session. Specific defenses:
+
+- `$HOME/.local/bin` is **appended** to `PATH` (not prepended). User
+  installs via `pip --user` / `uvx` / `pipx` still resolve, but a
+  planted `~/.local/bin/git` cannot shadow `/usr/bin/git` for future
+  shells. The skel rewrites the dangerous prepend form into the safe
+  append form on every container start, so existing setups migrate
+  silently.
+- `core.hooksPath=/dev/null` and `credential.helper` are re-applied
+  by `entrypoint.sh` on **every container start** with `--unset-all`
+  first, so an agent flipping or `--add`-shadowing them cannot
+  persist past a restart.
+- `credential.helper='cache --timeout=86400'` (not `store`) keeps the
+  PAT in `git-credential-cache--daemon` memory only — no plaintext
+  file in the bind mount or backups for an idle agent to `cat`.
+- `audit.sh` flags foreign MCP server entries (which would otherwise
+  re-launch attacker code on every `claude`/`opencode` start),
+  per-repo `core.fsmonitor` / `core.editor` / `core.pager` /
+  `core.sshCommand` / `core.hooksPath` overrides, and any files in
+  `~/.ssh/` (the image has no ssh client; keys imply the user wired
+  an out-of-band push path).
+
+What this does **not** cover: a compromised session within the active
+24h credential cache window can still ask the daemon for the token,
+and an agent can always exfiltrate any secret it has used. The frame
+is "minimize what survives across sessions," not "hide secrets from a
+running session." See §5.
+
 ---
 
 ## 7. Maintenance
@@ -408,7 +454,15 @@ It checks:
 - `vivarium` container running
 - Latest backup < 4 hours old
 - All repos in work dir use https origins (not ssh — would imply push-capable)
-- No tracked `.env` / `.pem` / `.key` files
+- No tracked secret-like files (`.env`, `.pem`, `.key`, `.p12`,
+  `.git-credentials`, `id_rsa*`)
+- No per-repo `core.fsmonitor` / `core.editor` / `core.pager` /
+  `core.sshCommand` / `core.hooksPath` overrides — all bypass the
+  global hooks-disabled defense (§6.2)
+- MCP config entries (`~/.claude.json`, opencode.json) are in a
+  known-good allowlist — foreign entries flag agent persistence (§6.7)
+- No files in `~/.ssh/` — ssh client isn't in the image, so any keys
+  would imply an out-of-band push path the user added
 
 ### Whenever you push new code — `./scripts/update.sh`
 
