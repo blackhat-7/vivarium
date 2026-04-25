@@ -83,11 +83,9 @@ if command -v bestiary >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     "bestiary MCP"
 fi
 
-# Optional remote-access mode — at most one listener at a time.
-# Paseo wins over opencode-web if both are set: it's a multi-agent
-# (claude/codex/opencode) superset that pairs with desktop/mobile/web/CLI
-# clients via QR code shown on stdout (visible in `docker compose logs
-# vivarium`). Pairing crypto is the auth — no password env needed.
+# Optional remote-access mode: paseo daemon on :6767. Pairs with
+# desktop/mobile/web/CLI clients via QR code shown on stdout (visible in
+# `docker compose logs vivarium`). Pairing crypto is the auth.
 #
 # Flags:
 #   --foreground   keep the daemon as PID 1 (default `daemon start` forks
@@ -109,12 +107,6 @@ if [ "${PASEO_ENABLE:-}" = "true" ] && command -v paseo >/dev/null 2>&1; then
   echo "[entrypoint]   hostnames allowlist: ${PASEO_HOSTNAMES}"
   echo "[entrypoint]   pair from your phone: open paseo, scan the QR code printed below"
   exec paseo daemon start --foreground --no-relay
-fi
-
-# Opencode-web: HTTP Basic (username "opencode", password from env).
-if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ] && command -v opencode >/dev/null 2>&1; then
-  echo "[entrypoint] OPENCODE_SERVER_PASSWORD is set — starting opencode web on :4096"
-  exec opencode web --port 4096 --hostname 0.0.0.0
 fi
 
 exec "$@"

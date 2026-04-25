@@ -67,10 +67,10 @@ RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
 
 # paseo — install iff INSTALL_PASEO=true via npm, fail hard on error.
 # Paseo is a multi-agent (claude/codex/opencode) daemon that pairs with
-# desktop/mobile/web clients via QR code. When enabled at runtime
-# (PASEO_ENABLE=true), the entrypoint launches `paseo daemon start` instead
-# of opencode web / sleep infinity. Pairing keys persist under
-# $HOME/.paseo (bind-mounted from the host).
+# desktop/mobile/web/CLI clients via QR code. When enabled at runtime
+# (PASEO_ENABLE=true), the entrypoint launches `paseo daemon start
+# --foreground --no-relay` instead of sleep infinity. Pairing keys
+# persist under $HOME/.paseo (bind-mounted from the host).
 ARG INSTALL_PASEO=false
 RUN if [ "$INSTALL_PASEO" = "true" ]; then \
       ( npm install -g --ignore-scripts=false @getpaseo/cli \

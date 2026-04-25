@@ -80,9 +80,11 @@ if [ -x "$VIVARIUM_DIR/scripts/cron-uninstall.sh" ]; then
   yep "bash '$VIVARIUM_DIR/scripts/cron-uninstall.sh'"
 fi
 
-# tailnet forwarder
-if [ -x "$VIVARIUM_DIR/scripts/forwarder-uninstall.sh" ]; then
-  yep "bash '$VIVARIUM_DIR/scripts/forwarder-uninstall.sh'"
+# legacy opencode-web tailnet forwarder (removed in commit dropping opencode-web)
+if [ -f "$HOME/.config/systemd/user/vivarium-tailnet-forward.service" ]; then
+  yep "systemctl --user disable --now vivarium-tailnet-forward.service 2>/dev/null || true"
+  yep "rm -f '$HOME/.config/systemd/user/vivarium-tailnet-forward.service'"
+  yep "systemctl --user daemon-reload 2>/dev/null || true"
 fi
 
 # optional: work dir + auth

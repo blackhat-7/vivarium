@@ -19,28 +19,19 @@ services:
 
     working_dir: /home/vivarium/work
 
-    # Remote-access mode — at most one listener at a time.
-    #   PASEO_ENABLE=true              -> entrypoint runs `paseo daemon start
-    #                                     --foreground --no-relay` on :6767,
-    #                                     paired by QR (no password).
-    #   OPENCODE_SERVER_PASSWORD set   -> entrypoint runs `opencode web` on
-    #                                     :4096, gated by HTTP Basic auth.
-    #   neither                        -> sleep infinity (shell-in only).
-    # Paseo wins if both are set (it's a multi-agent superset of opencode-web).
+    # Remote-access mode — paseo daemon on :6767. When PASEO_ENABLE=true the
+    # entrypoint runs `paseo daemon start --foreground --no-relay`, paired by
+    # QR (no password). Otherwise the container sleeps and you shell in.
     # PASEO_HOSTNAMES is paseo's Host-header allowlist; entrypoint defaults it
     # to "true" (any host) since the network gate is the actual auth surface.
     environment:
-      OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:-}"
       PASEO_ENABLE: "${PASEO_ENABLE:-}"
       PASEO_HOSTNAMES: "${PASEO_HOSTNAMES:-}"
 
-    # Port mappings default to 127.0.0.1. Bind directly to a tailscale IP
+    # Port mapping defaults to 127.0.0.1. Bind directly to a tailscale IP
     # (e.g. PASEO_BIND_ADDR=100.64.0.3) on a rootful Docker daemon to expose
-    # the listener tailnet-only, no host-side forwarder needed. On Docker
-    # Desktop the daemon runs in a VM and cannot bind host-specific IPs;
-    # use scripts/forwarder-install.sh for that case (opencode pattern).
+    # the listener tailnet-only, no host-side forwarder needed.
     ports:
-      - "${OPENCODE_BIND_ADDR:-127.0.0.1}:4096:4096"
       - "${PASEO_BIND_ADDR:-127.0.0.1}:6767:6767"
 
     # baseline hardening — no capabilities beyond what a shell needs
