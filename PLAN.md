@@ -203,9 +203,13 @@ reproducibility; track `main` if you want each `update.sh` to pull the
 latest.
 
 Then `./scripts/up.sh` rebuilds with bestiary baked in. Inside the
-container the binary is `bestiary` (`bestiary list` to confirm). Point the
-agent's MCP config at it — once, written into your persistent vivarium
-home, survives rebuilds:
+container the binary is `bestiary` (`bestiary list` to confirm).
+
+The container's `entrypoint.sh` auto-wires bestiary into your
+`~/vivarium-home/.config/opencode/opencode.json` and
+`~/vivarium-home/.claude.json` on every container start — but only if the
+entry isn't already present. Customize it after the first wiring; the
+entrypoint won't overwrite. Result on a fresh setup:
 
 ```jsonc
 // ~/vivarium-home/.config/opencode/opencode.json
@@ -214,6 +218,10 @@ home, survives rebuilds:
 // ~/vivarium-home/.claude.json
 { "mcpServers": { "bestiary": { "command": "bestiary", "args": ["serve"] } } }
 ```
+
+If you flip `INSTALL_BESTIARY=false` later, the binary is gone but the
+config entry stays — agents will log a launch failure for the missing
+server. Remove the entry by hand if you don't want it anymore.
 
 Tools that need API keys: drop a per-tool env file in
 `~/vivarium-home/.env.d/<tool>.env` (mode 600) and `source` it before

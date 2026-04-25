@@ -24,6 +24,8 @@ Walk through once. When every box is checked, the vivarium is ready.
 - [ ] `git config --global --get core.hooksPath` returns `/dev/null`
 - [ ] `npm config get ignore-scripts` returns `true`
 - [ ] If `INSTALL_BESTIARY=true`: `bestiary list` prints registered tools (one line per tool)
+- [ ] If `INSTALL_BESTIARY=true`: `~/.config/opencode/opencode.json` has a `mcp.bestiary` entry (auto-wired by entrypoint on first start)
+- [ ] If `INSTALL_BESTIARY=true`: `~/.claude.json` has a `mcpServers.bestiary` entry (auto-wired by entrypoint on first start)
 
 ## GitHub PAT verification (the critical one)
 
