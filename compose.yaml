@@ -24,14 +24,15 @@ services:
     environment:
       OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:-}"
 
-    # Port mapping is bound to the host's headscale interface (100.64.0.1) only,
-    # NOT 0.0.0.0 — so LAN/WAN cannot reach the container directly. Only traffic
-    # arriving via headscale (e.g. from the Hetzner Caddy reverse proxy) hits it.
-    # Requires tailscale to be up on the host. Disable by leaving
-    # OPENCODE_SERVER_PASSWORD unset (the listener won't start; the bind is
-    # harmless but you can comment this out if you want zero exposure).
+    # Port mapping defaults to 127.0.0.1 because Docker Desktop on Linux runs
+    # the daemon in a VM and cannot bind host-specific IPs (e.g. tailscale).
+    # The host-side systemd user unit installed by scripts/forwarder-install.sh
+    # bridges 100.64.0.1:4096 -> 127.0.0.1:4096, keeping LAN/WAN out while
+    # allowing the Hetzner Caddy reverse proxy to reach this listener over
+    # headscale. With a rootful Docker daemon you can skip the forwarder by
+    # setting OPENCODE_BIND_ADDR=100.64.0.1 directly.
     ports:
-      - "${OPENCODE_BIND_ADDR:-100.64.0.1}:4096:4096"
+      - "${OPENCODE_BIND_ADDR:-127.0.0.1}:4096:4096"
 
     # baseline hardening — no capabilities beyond what a shell needs
     cap_drop: ["ALL"]

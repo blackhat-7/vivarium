@@ -48,6 +48,7 @@ echo "vivarium remove plan:"
 echo "  - stop + remove container 'vivarium' (if running)"
 echo "  - remove docker image vivarium:latest (if present)"
 echo "  - remove vivarium cron entries"
+echo "  - remove vivarium tailnet forwarder systemd unit"
 $REMOVE_DATA    && echo "  - DELETE $VIVARIUM_HOME (your work dir + agent auth)"
 $REMOVE_BACKUPS && echo "  - DELETE $VIVARIUM_BACKUP (snapshot history + log files)"
 $REMOVE_REPO    && echo "  - DELETE $VIVARIUM_DIR (the vivarium repo itself)"
@@ -77,6 +78,11 @@ fi
 # cron
 if [ -x "$VIVARIUM_DIR/scripts/cron-uninstall.sh" ]; then
   yep "bash '$VIVARIUM_DIR/scripts/cron-uninstall.sh'"
+fi
+
+# tailnet forwarder
+if [ -x "$VIVARIUM_DIR/scripts/forwarder-uninstall.sh" ]; then
+  yep "bash '$VIVARIUM_DIR/scripts/forwarder-uninstall.sh'"
 fi
 
 # optional: work dir + auth

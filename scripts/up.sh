@@ -76,6 +76,15 @@ docker compose up -d
 echo "[up] container state:"
 docker compose ps
 
+# host-side socat forwarder: tracks .env. installs when remote access is on,
+# uninstalls when it's off. idempotent either way.
+if grep -qE '^OPENCODE_SERVER_PASSWORD=.+' .env; then
+  echo "[up] OPENCODE_SERVER_PASSWORD is set — installing tailnet forwarder"
+  bash scripts/forwarder-install.sh || echo "[up] WARNING: forwarder install failed; remote access via headscale won't work until fixed" >&2
+else
+  bash scripts/forwarder-uninstall.sh >/dev/null 2>&1 || true
+fi
+
 cat <<EOF
 
 [up] done. shell in with:  $(dirname "${BASH_SOURCE[0]}")/shell.sh
