@@ -118,6 +118,12 @@ fi
 if [ "${PASEO_ENABLE:-}" = "true" ] && command -v paseo >/dev/null 2>&1; then
   export PASEO_LISTEN="${PASEO_LISTEN:-0.0.0.0:6767}"
   export PASEO_HOSTNAMES="${PASEO_HOSTNAMES:-true}"
+  # Stale pidfile cleanup: paseo writes ~/.paseo/paseo.pid with the daemon's
+  # PID and refuses to start if it sees one. After a `docker compose down/up`
+  # the file persists in the bind-mounted home, but the PID belongs to a dead
+  # container's namespace. Safe to delete unconditionally at entrypoint time:
+  # by definition no paseo is running in this container yet.
+  rm -f "$HOME/.paseo/paseo.pid"
   echo "[entrypoint] PASEO_ENABLE=true — starting paseo daemon on ${PASEO_LISTEN}"
   echo "[entrypoint]   hostnames allowlist: ${PASEO_HOSTNAMES}"
   echo "[entrypoint]   pair from your phone: open paseo, scan the QR code printed below"
