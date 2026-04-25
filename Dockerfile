@@ -65,6 +65,21 @@ RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
       echo "[skip] INSTALL_CLAUDE=false — skipping claude code" ; \
     fi
 
+# paseo — install iff INSTALL_PASEO=true via npm, fail hard on error.
+# Paseo is a multi-agent (claude/codex/opencode) daemon that pairs with
+# desktop/mobile/web clients via QR code. When enabled at runtime
+# (PASEO_ENABLE=true), the entrypoint launches `paseo daemon start` instead
+# of opencode web / sleep infinity. Pairing keys persist under
+# $HOME/.paseo (bind-mounted from the host).
+ARG INSTALL_PASEO=false
+RUN if [ "$INSTALL_PASEO" = "true" ]; then \
+      ( npm install -g --ignore-scripts=false @getpaseo/cli \
+        && paseo --version ) \
+      || ( echo "[FATAL] paseo install failed. set INSTALL_PASEO=false in .env to skip." >&2 && exit 1 ); \
+    else \
+      echo "[skip] INSTALL_PASEO=false — skipping paseo" ; \
+    fi
+
 # bestiary — install iff INSTALL_BESTIARY=true into a system venv at
 # /opt/bestiary so the non-root vivarium user can execute it via the
 # /usr/local/bin/bestiary symlink. fail hard on error.

@@ -83,11 +83,33 @@ if command -v bestiary >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     "bestiary MCP"
 fi
 
-# Optional remote-access mode: when OPENCODE_SERVER_PASSWORD is set, replace
-# the default sleep-infinity command with a headless opencode web server.
-# Auth is HTTP Basic (username "opencode", password from env). Bind to 0.0.0.0
-# inside the container — the host port mapping in compose.yaml restricts which
-# host interface accepts connections.
+# Optional remote-access mode — at most one listener at a time.
+# Paseo wins over opencode-web if both are set: it's a multi-agent
+# (claude/codex/opencode) superset that pairs with desktop/mobile/web/CLI
+# clients via QR code shown on stdout (visible in `docker compose logs
+# vivarium`). Pairing crypto is the auth — no password env needed.
+#
+# PASEO_HOSTNAMES is paseo's Host-header allowlist. Upstream default is
+# "localhost,.localhost"; we extend it with the tailnet forward IP so a
+# phone connecting via tailscale isn't rejected at the application layer.
+# Bind 0.0.0.0 inside the container — the host port mapping in compose.yaml
+# restricts which host interface accepts connections.
+if [ "${PASEO_ENABLE:-}" = "true" ] && command -v paseo >/dev/null 2>&1; then
+  export PASEO_LISTEN="${PASEO_LISTEN:-0.0.0.0:6767}"
+  fwd="${PASEO_FORWARD_ADDR:-100.64.0.1}"
+  base="localhost,.localhost,${fwd}"
+  if [ -n "${PASEO_HOSTNAMES:-}" ]; then
+    export PASEO_HOSTNAMES="${base},${PASEO_HOSTNAMES}"
+  else
+    export PASEO_HOSTNAMES="${base}"
+  fi
+  echo "[entrypoint] PASEO_ENABLE=true — starting paseo daemon on ${PASEO_LISTEN}"
+  echo "[entrypoint]   hostnames allowlist: ${PASEO_HOSTNAMES}"
+  echo "[entrypoint]   pair from your phone: open paseo, scan the QR code printed below"
+  exec paseo daemon start
+fi
+
+# Opencode-web: HTTP Basic (username "opencode", password from env).
 if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ] && command -v opencode >/dev/null 2>&1; then
   echo "[entrypoint] OPENCODE_SERVER_PASSWORD is set — starting opencode web on :4096"
   exec opencode web --port 4096 --hostname 0.0.0.0

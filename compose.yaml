@@ -7,6 +7,7 @@ services:
         GID: "${HOST_GID:-1000}"
         INSTALL_OPENCODE: "${INSTALL_OPENCODE:-true}"
         INSTALL_CLAUDE: "${INSTALL_CLAUDE:-false}"
+        INSTALL_PASEO: "${INSTALL_PASEO:-false}"
         INSTALL_BESTIARY: "${INSTALL_BESTIARY:-false}"
         BESTIARY_REF: "${BESTIARY_REF:-main}"
     image: vivarium:latest
@@ -18,21 +19,33 @@ services:
 
     working_dir: /home/vivarium/work
 
-    # Remote-access mode: when set, the entrypoint runs `opencode web` instead
-    # of `sleep infinity`. HTTP Basic auth (user "opencode", this password)
-    # gates the listener. Empty = disabled = no listener, no auth required.
+    # Remote-access mode — at most one listener at a time.
+    #   PASEO_ENABLE=true              -> entrypoint runs `paseo daemon start`
+    #                                     on :6767, paired by QR (no password).
+    #   OPENCODE_SERVER_PASSWORD set   -> entrypoint runs `opencode web` on
+    #                                     :4096, gated by HTTP Basic auth.
+    #   neither                        -> sleep infinity (shell-in only).
+    # Paseo wins if both are set (it's a multi-agent superset of opencode-web).
+    # PASEO_HOSTNAMES extends the daemon's Host-header allowlist (defaults to
+    # "localhost,.localhost" — a tailscale IP/hostname won't connect without
+    # being added). Comma-separated; the entrypoint adds the tailnet forward
+    # IP automatically.
     environment:
       OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:-}"
+      PASEO_ENABLE: "${PASEO_ENABLE:-}"
+      PASEO_HOSTNAMES: "${PASEO_HOSTNAMES:-}"
+      PASEO_FORWARD_ADDR: "${PASEO_FORWARD_ADDR:-100.64.0.1}"
 
-    # Port mapping defaults to 127.0.0.1 because Docker Desktop on Linux runs
+    # Port mappings default to 127.0.0.1 because Docker Desktop on Linux runs
     # the daemon in a VM and cannot bind host-specific IPs (e.g. tailscale).
-    # The host-side systemd user unit installed by scripts/forwarder-install.sh
-    # bridges 100.64.0.1:4096 -> 127.0.0.1:4096, keeping LAN/WAN out while
-    # allowing the Hetzner Caddy reverse proxy to reach this listener over
-    # headscale. With a rootful Docker daemon you can skip the forwarder by
-    # setting OPENCODE_BIND_ADDR=100.64.0.1 directly.
+    # The host-side systemd user units installed by scripts/forwarder-install*.sh
+    # bridge 100.64.0.1:<port> -> 127.0.0.1:<port>, keeping LAN/WAN out while
+    # allowing tailnet clients (Hetzner Caddy / phone over tailscale) to reach
+    # the listener. With a rootful Docker daemon you can skip the forwarder by
+    # setting *_BIND_ADDR=100.64.0.1 directly.
     ports:
       - "${OPENCODE_BIND_ADDR:-127.0.0.1}:4096:4096"
+      - "${PASEO_BIND_ADDR:-127.0.0.1}:6767:6767"
 
     # baseline hardening — no capabilities beyond what a shell needs
     cap_drop: ["ALL"]

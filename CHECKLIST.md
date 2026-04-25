@@ -27,6 +27,15 @@ Walk through once. When every box is checked, the vivarium is ready.
 - [ ] If `INSTALL_BESTIARY=true`: `bestiary list` prints registered tools (one line per tool)
 - [ ] If `INSTALL_BESTIARY=true`: `~/.config/opencode/opencode.json` has a `mcp.bestiary` entry (auto-wired by entrypoint on first start)
 - [ ] If `INSTALL_BESTIARY=true`: `~/.claude.json` has a `mcpServers.bestiary` entry (auto-wired by entrypoint on first start)
+- [ ] If `INSTALL_PASEO=true`: `paseo --version` prints a version
+
+## Paseo remote-access (only if `PASEO_ENABLE=true`)
+
+- [ ] `docker compose logs vivarium` shows `[entrypoint] PASEO_ENABLE=true — starting paseo daemon on 0.0.0.0:6767` and a QR code below it
+- [ ] Host forwarder is up: `systemctl --user status vivarium-tailnet-forward-paseo.service` is `active (running)`
+- [ ] `nc -z 127.0.0.1 6767` from the host succeeds; `nc -z <your-tailscale-ip> 6767` from another tailnet device also succeeds
+- [ ] Phone + Tailscale: install the paseo app, scan the QR from `docker compose logs vivarium`, daemon shows up under "Connected daemons"
+- [ ] From the phone, start a Claude Code / opencode / codex session — agent commands run inside the vivarium container, not on the phone
 
 ## GitHub PAT verification (the critical one)
 

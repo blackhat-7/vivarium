@@ -53,11 +53,12 @@ fi
 upsert_env VIVARIUM_HOME "$VIVARIUM_HOME"
 upsert_env INSTALL_OPENCODE true
 upsert_env INSTALL_CLAUDE false
+upsert_env INSTALL_PASEO false
 upsert_env INSTALL_BESTIARY false
 upsert_env BESTIARY_REF main
 
 echo "[up] current agent selection:"
-grep -E '^INSTALL_(OPENCODE|CLAUDE|BESTIARY)=' .env | sed 's/^/  /' || true
+grep -E '^INSTALL_(OPENCODE|CLAUDE|PASEO|BESTIARY)=' .env | sed 's/^/  /' || true
 
 # fail fast if no agent CLI is selected — same check that used to live as a
 # RUN step in the Dockerfile (moved here so it doesn't bust the apt cache).
@@ -76,13 +77,20 @@ docker compose up -d
 echo "[up] container state:"
 docker compose ps
 
-# host-side socat forwarder: tracks .env. installs when remote access is on,
-# uninstalls when it's off. idempotent either way.
+# host-side socat forwarders: track .env, install when the corresponding
+# remote-access mode is on, uninstall when it's off. idempotent either way.
 if grep -qE '^OPENCODE_SERVER_PASSWORD=.+' .env; then
-  echo "[up] OPENCODE_SERVER_PASSWORD is set — installing tailnet forwarder"
-  bash scripts/forwarder-install.sh || echo "[up] WARNING: forwarder install failed; remote access via headscale won't work until fixed" >&2
+  echo "[up] OPENCODE_SERVER_PASSWORD is set — installing opencode tailnet forwarder"
+  bash scripts/forwarder-install.sh || echo "[up] WARNING: opencode forwarder install failed; remote access via headscale won't work until fixed" >&2
 else
   bash scripts/forwarder-uninstall.sh >/dev/null 2>&1 || true
+fi
+
+if grep -qE '^PASEO_ENABLE=true$' .env; then
+  echo "[up] PASEO_ENABLE=true — installing paseo tailnet forwarder"
+  bash scripts/forwarder-install-paseo.sh || echo "[up] WARNING: paseo forwarder install failed; phone won't reach the daemon over tailscale until fixed" >&2
+else
+  bash scripts/forwarder-uninstall-paseo.sh >/dev/null 2>&1 || true
 fi
 
 cat <<EOF
