@@ -23,6 +23,7 @@ Walk through once. When every box is checked, the vivarium is ready.
 - [ ] `opencode auth login <provider>` completed; auth stored under `~/.config/opencode/`
 - [ ] `git config --global --get core.hooksPath` returns `/dev/null`
 - [ ] `npm config get ignore-scripts` returns `true`
+- [ ] If `INSTALL_BESTIARY=true`: `bestiary list` prints registered tools (one line per tool)
 
 ## GitHub PAT verification (the critical one)
 

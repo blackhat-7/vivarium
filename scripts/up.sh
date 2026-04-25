@@ -33,9 +33,11 @@ fi
 upsert_env VIVARIUM_HOME "$VIVARIUM_HOME"
 upsert_env INSTALL_OPENCODE true
 upsert_env INSTALL_CLAUDE false
+upsert_env INSTALL_BESTIARY false
+upsert_env BESTIARY_REF main
 
 echo "[up] current agent selection:"
-grep -E '^INSTALL_(OPENCODE|CLAUDE)=' .env | sed 's/^/  /' || true
+grep -E '^INSTALL_(OPENCODE|CLAUDE|BESTIARY)=' .env | sed 's/^/  /' || true
 
 echo "[up] building image (first time: ~3 min; cached: seconds)"
 docker compose build

@@ -182,6 +182,45 @@ touches vivarium lines — your backup directory and log files are untouched.
 Snapshots go to `~/vivarium-backup/hourly-HH/` (overwritten each day) and
 `~/vivarium-backup/daily-N/` (day-of-week, 7-day rolling).
 
+### 3.5 MCP servers (optional)
+
+The image can bake in [bestiary](https://github.com/blackhat-7/bestiary), an
+extensible MCP server with a built-in reddit tool and a plugin system for
+adding more. Off by default. To enable:
+
+```bash
+# in .env
+INSTALL_BESTIARY=true
+BESTIARY_REF=v0.1.0      # pin to a tag; "main" floats with upstream
+```
+
+Then `./scripts/up.sh` rebuilds with bestiary baked in. Inside the
+container the binary is `bestiary` (`bestiary list` to confirm). Point the
+agent's MCP config at it — once, written into your persistent vivarium
+home, survives rebuilds:
+
+```jsonc
+// ~/vivarium-home/.config/opencode/opencode.json
+{ "mcp": { "bestiary": { "type": "local", "command": ["bestiary", "serve"], "enabled": true } } }
+
+// ~/vivarium-home/.claude.json
+{ "mcpServers": { "bestiary": { "command": "bestiary", "args": ["serve"] } } }
+```
+
+Tools that need API keys: drop a per-tool env file in
+`~/vivarium-home/.env.d/<tool>.env` (mode 600) and `source` it before
+launching the agent. Same pattern as §5. Bestiary's built-in `reddit` needs
+no auth — it hits public JSON endpoints.
+
+To trim what's loaded into the LLM's context per session:
+
+```bash
+BESTIARY_ENABLED=reddit opencode    # only register reddit, ignore other tools
+```
+
+Bestiary install fails fast with a `[FATAL]` message naming the flag to
+flip — same pattern as opencode/claude.
+
 ---
 
 ## 4. Daily workflow

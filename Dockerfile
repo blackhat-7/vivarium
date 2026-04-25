@@ -9,6 +9,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG INSTALL_OPENCODE=true
 ARG INSTALL_CLAUDE=false
 
+# bestiary — extensible MCP server (https://github.com/blackhat-7/bestiary).
+# off by default. pin to a tag/branch/commit; "main" floats with upstream.
+ARG INSTALL_BESTIARY=false
+ARG BESTIARY_REF=main
+
 RUN if [ "$INSTALL_OPENCODE" != "true" ] && [ "$INSTALL_CLAUDE" != "true" ]; then \
       echo "[FATAL] at least one of INSTALL_OPENCODE / INSTALL_CLAUDE must be true" >&2 ; \
       exit 1 ; \
@@ -56,6 +61,20 @@ RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
       || ( echo "[FATAL] claude-code install failed. set INSTALL_CLAUDE=false in .env to skip." >&2 && exit 1 ); \
     else \
       echo "[skip] INSTALL_CLAUDE=false — skipping claude code" ; \
+    fi
+
+# bestiary — install iff INSTALL_BESTIARY=true into a system venv at
+# /opt/bestiary so the non-root vivarium user can execute it via the
+# /usr/local/bin/bestiary symlink. fail hard on error.
+RUN if [ "$INSTALL_BESTIARY" = "true" ]; then \
+      ( uv venv --python 3.12 /opt/bestiary \
+        && uv pip install --python /opt/bestiary/bin/python \
+             "git+https://github.com/blackhat-7/bestiary.git@${BESTIARY_REF}" \
+        && ln -s /opt/bestiary/bin/bestiary /usr/local/bin/bestiary \
+        && bestiary list ) \
+      || ( echo "[FATAL] bestiary install failed. set INSTALL_BESTIARY=false in .env to skip." >&2 && exit 1 ); \
+    else \
+      echo "[skip] INSTALL_BESTIARY=false — skipping bestiary" ; \
     fi
 
 # skeleton that gets copied to /home/vivarium on first run
