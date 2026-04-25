@@ -83,4 +83,14 @@ if command -v bestiary >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     "bestiary MCP"
 fi
 
+# Optional remote-access mode: when OPENCODE_SERVER_PASSWORD is set, replace
+# the default sleep-infinity command with a headless opencode web server.
+# Auth is HTTP Basic (username "opencode", password from env). Bind to 0.0.0.0
+# inside the container — the host port mapping in compose.yaml restricts which
+# host interface accepts connections.
+if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ] && command -v opencode >/dev/null 2>&1; then
+  echo "[entrypoint] OPENCODE_SERVER_PASSWORD is set — starting opencode web on :4096"
+  exec opencode web --port 4096 --hostname 0.0.0.0
+fi
+
 exec "$@"

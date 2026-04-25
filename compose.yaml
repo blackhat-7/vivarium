@@ -18,6 +18,21 @@ services:
 
     working_dir: /home/vivarium/work
 
+    # Remote-access mode: when set, the entrypoint runs `opencode web` instead
+    # of `sleep infinity`. HTTP Basic auth (user "opencode", this password)
+    # gates the listener. Empty = disabled = no listener, no auth required.
+    environment:
+      OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:-}"
+
+    # Port mapping is bound to the host's headscale interface (100.64.0.1) only,
+    # NOT 0.0.0.0 — so LAN/WAN cannot reach the container directly. Only traffic
+    # arriving via headscale (e.g. from the Hetzner Caddy reverse proxy) hits it.
+    # Requires tailscale to be up on the host. Disable by leaving
+    # OPENCODE_SERVER_PASSWORD unset (the listener won't start; the bind is
+    # harmless but you can comment this out if you want zero exposure).
+    ports:
+      - "${OPENCODE_BIND_ADDR:-100.64.0.1}:4096:4096"
+
     # baseline hardening — no capabilities beyond what a shell needs
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"]
