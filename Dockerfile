@@ -1,29 +1,28 @@
+# syntax=docker/dockerfile:1.6
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# which agent CLIs to install — controlled from .env / compose build args.
-# at least one must be true; validation below fails fast if both are false.
-ARG INSTALL_OPENCODE=true
-ARG INSTALL_CLAUDE=false
-
-# bestiary — extensible MCP server (https://github.com/blackhat-7/bestiary).
-# off by default. pin to a tag/branch/commit; "main" floats with upstream.
-ARG INSTALL_BESTIARY=false
-ARG BESTIARY_REF=main
-
-RUN if [ "$INSTALL_OPENCODE" != "true" ] && [ "$INSTALL_CLAUDE" != "true" ]; then \
-      echo "[FATAL] at least one of INSTALL_OPENCODE / INSTALL_CLAUDE must be true" >&2 ; \
-      exit 1 ; \
-    fi
-
-# system tools — everything the agent is likely to reach for.
+# system tools + node 20 in one apt pass.
 # openssh-client is deliberately omitted: the read-only PAT is the structural
 # push-blocker only over HTTPS; an SSH key the user (or a confused agent)
 # drops in ~/.ssh would silently bypass it. PLAN.md §2 architecture box.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# BuildKit cache mounts keep the .deb downloads on the host between rebuilds,
+# so a busted layer here re-runs apt but skips the ~150 MB network fetch.
+# `rm -f .../docker-clean` disables Ubuntu's default post-install cache wipe
+# so the cache mount actually retains the .debs. The mounts live outside
+# the image, so nothing is added to the runtime layer.
+#
+# INSTALL_* and BESTIARY_REF args are declared just before the steps that
+# use them, so changing them does NOT invalidate this expensive layer.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git \
       tmux vim nano less \
       build-essential pkg-config \
@@ -31,20 +30,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gnupg2 pass \
       python3 python3-pip python3-venv python-is-python3 \
       unzip xz-utils \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/fdfind /usr/local/bin/fd
-
-# node 20 via nodesource (keeps npm current)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm config set ignore-scripts true -g
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+ && npm config set ignore-scripts true -g
 
 # uv — fast python package manager, system-wide
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/
 
-# opencode — install iff INSTALL_OPENCODE=true, fail hard on error
+# opencode — install iff INSTALL_OPENCODE=true, fail hard on error.
+# (validation that at least one agent CLI is selected lives in scripts/up.sh
+# so it doesn't bust the heavy apt layer.)
+ARG INSTALL_OPENCODE=true
 RUN if [ "$INSTALL_OPENCODE" = "true" ]; then \
       ( curl -fsSL https://opencode.ai/install | bash \
         && ( cp /root/.opencode/bin/opencode /usr/local/bin/opencode 2>/dev/null \
@@ -58,6 +56,7 @@ RUN if [ "$INSTALL_OPENCODE" = "true" ]; then \
     fi
 
 # claude code — install iff INSTALL_CLAUDE=true via npm, fail hard on error
+ARG INSTALL_CLAUDE=false
 RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
       ( npm install -g --ignore-scripts=false @anthropic-ai/claude-code \
         && claude --version ) \
@@ -69,6 +68,8 @@ RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
 # bestiary — install iff INSTALL_BESTIARY=true into a system venv at
 # /opt/bestiary so the non-root vivarium user can execute it via the
 # /usr/local/bin/bestiary symlink. fail hard on error.
+ARG INSTALL_BESTIARY=false
+ARG BESTIARY_REF=main
 RUN if [ "$INSTALL_BESTIARY" = "true" ]; then \
       ( uv venv --python 3.12 /opt/bestiary \
         && uv pip install --python /opt/bestiary/bin/python \
