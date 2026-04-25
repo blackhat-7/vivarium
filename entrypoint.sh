@@ -83,6 +83,21 @@ if command -v bestiary >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     "bestiary MCP"
 fi
 
+# Auto-allow full agent autonomy for claude code, matching opencode's
+# default. The vivarium container is the sandbox — its threat model already
+# accepts that an agent inside has unrestricted access to ~/vivarium-home;
+# permission prompts inside that boundary are friction without security
+# benefit. Only ADDS the key if absent: user edits to settings.json win.
+# Reuses the wire_mcp_entry helper despite the name (it's a generic
+# "merge JSON entry if missing" function).
+if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  wire_mcp_entry \
+    "$HOME/.claude/settings.json" \
+    '.permissions.defaultMode' \
+    '.permissions.defaultMode = "bypassPermissions"' \
+    "claude bypassPermissions mode"
+fi
+
 # Optional remote-access mode: paseo daemon on :6767. Pairs with
 # desktop/mobile/web/CLI clients via QR code shown on stdout (visible in
 # `docker compose logs vivarium`). Pairing crypto is the auth.
