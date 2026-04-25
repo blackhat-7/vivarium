@@ -86,13 +86,6 @@ else
   bash scripts/forwarder-uninstall.sh >/dev/null 2>&1 || true
 fi
 
-if grep -qE '^PASEO_ENABLE=true$' .env; then
-  echo "[up] PASEO_ENABLE=true — installing paseo tailnet forwarder"
-  bash scripts/forwarder-install-paseo.sh || echo "[up] WARNING: paseo forwarder install failed; phone won't reach the daemon over tailscale until fixed" >&2
-else
-  bash scripts/forwarder-uninstall-paseo.sh >/dev/null 2>&1 || true
-fi
-
 cat <<EOF
 
 [up] done. shell in with:  $(dirname "${BASH_SOURCE[0]}")/shell.sh

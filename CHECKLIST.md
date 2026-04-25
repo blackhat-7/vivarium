@@ -32,8 +32,8 @@ Walk through once. When every box is checked, the vivarium is ready.
 ## Paseo remote-access (only if `PASEO_ENABLE=true`)
 
 - [ ] `docker compose logs vivarium` shows `[entrypoint] PASEO_ENABLE=true — starting paseo daemon on 0.0.0.0:6767` and a QR code below it
-- [ ] Host forwarder is up: `systemctl --user status vivarium-tailnet-forward-paseo.service` is `active (running)`
-- [ ] `nc -z 127.0.0.1 6767` from the host succeeds; `nc -z <your-tailscale-ip> 6767` from another tailnet device also succeeds
+- [ ] `PASEO_BIND_ADDR` in `.env` is set to this host's tailscale IPv4 (`tailscale ip -4`) so `:6767` binds tailnet-only
+- [ ] `nc -z <your-tailscale-ip> 6767` from another tailnet device succeeds
 - [ ] Phone + Tailscale: install the paseo app, scan the QR from `docker compose logs vivarium`, daemon shows up under "Connected daemons"
 - [ ] From the phone, start a Claude Code / opencode / codex session — agent commands run inside the vivarium container, not on the phone
 

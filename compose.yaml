@@ -20,29 +20,25 @@ services:
     working_dir: /home/vivarium/work
 
     # Remote-access mode — at most one listener at a time.
-    #   PASEO_ENABLE=true              -> entrypoint runs `paseo daemon start`
-    #                                     on :6767, paired by QR (no password).
+    #   PASEO_ENABLE=true              -> entrypoint runs `paseo daemon start
+    #                                     --foreground --no-relay` on :6767,
+    #                                     paired by QR (no password).
     #   OPENCODE_SERVER_PASSWORD set   -> entrypoint runs `opencode web` on
     #                                     :4096, gated by HTTP Basic auth.
     #   neither                        -> sleep infinity (shell-in only).
     # Paseo wins if both are set (it's a multi-agent superset of opencode-web).
-    # PASEO_HOSTNAMES extends the daemon's Host-header allowlist (defaults to
-    # "localhost,.localhost" — a tailscale IP/hostname won't connect without
-    # being added). Comma-separated; the entrypoint adds the tailnet forward
-    # IP automatically.
+    # PASEO_HOSTNAMES is paseo's Host-header allowlist; entrypoint defaults it
+    # to "true" (any host) since the network gate is the actual auth surface.
     environment:
       OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:-}"
       PASEO_ENABLE: "${PASEO_ENABLE:-}"
       PASEO_HOSTNAMES: "${PASEO_HOSTNAMES:-}"
-      PASEO_FORWARD_ADDR: "${PASEO_FORWARD_ADDR:-100.64.0.1}"
 
-    # Port mappings default to 127.0.0.1 because Docker Desktop on Linux runs
-    # the daemon in a VM and cannot bind host-specific IPs (e.g. tailscale).
-    # The host-side systemd user units installed by scripts/forwarder-install*.sh
-    # bridge 100.64.0.1:<port> -> 127.0.0.1:<port>, keeping LAN/WAN out while
-    # allowing tailnet clients (Hetzner Caddy / phone over tailscale) to reach
-    # the listener. With a rootful Docker daemon you can skip the forwarder by
-    # setting *_BIND_ADDR=100.64.0.1 directly.
+    # Port mappings default to 127.0.0.1. Bind directly to a tailscale IP
+    # (e.g. PASEO_BIND_ADDR=100.64.0.3) on a rootful Docker daemon to expose
+    # the listener tailnet-only, no host-side forwarder needed. On Docker
+    # Desktop the daemon runs in a VM and cannot bind host-specific IPs;
+    # use scripts/forwarder-install.sh for that case (opencode pattern).
     ports:
       - "${OPENCODE_BIND_ADDR:-127.0.0.1}:4096:4096"
       - "${PASEO_BIND_ADDR:-127.0.0.1}:6767:6767"

@@ -89,24 +89,26 @@ fi
 # clients via QR code shown on stdout (visible in `docker compose logs
 # vivarium`). Pairing crypto is the auth — no password env needed.
 #
-# PASEO_HOSTNAMES is paseo's Host-header allowlist. Upstream default is
-# "localhost,.localhost"; we extend it with the tailnet forward IP so a
-# phone connecting via tailscale isn't rejected at the application layer.
-# Bind 0.0.0.0 inside the container — the host port mapping in compose.yaml
-# restricts which host interface accepts connections.
+# Flags:
+#   --foreground   keep the daemon as PID 1 (default `daemon start` forks
+#                  and exits, which crashes the container in a restart loop)
+#   --no-relay     don't dial paseo.sh's hosted relay; tailscale-only by
+#                  default, matches PLAN's "minimum-moving-parts" stance
+#
+# PASEO_HOSTNAMES is paseo's Host-header allowlist. Default upstream is
+# "localhost,.localhost" — too restrictive for tailnet clients hitting the
+# daemon by IP or magic-DNS hostname. We default to "true" (any host)
+# because the actual auth surfaces are (a) the docker port binding
+# (PASEO_BIND_ADDR — set to a tailscale IP for tailnet-only) and (b) the
+# QR-paired NaCl box keys. Set PASEO_HOSTNAMES explicitly in .env to
+# tighten this if you want defense-in-depth.
 if [ "${PASEO_ENABLE:-}" = "true" ] && command -v paseo >/dev/null 2>&1; then
   export PASEO_LISTEN="${PASEO_LISTEN:-0.0.0.0:6767}"
-  fwd="${PASEO_FORWARD_ADDR:-100.64.0.1}"
-  base="localhost,.localhost,${fwd}"
-  if [ -n "${PASEO_HOSTNAMES:-}" ]; then
-    export PASEO_HOSTNAMES="${base},${PASEO_HOSTNAMES}"
-  else
-    export PASEO_HOSTNAMES="${base}"
-  fi
+  export PASEO_HOSTNAMES="${PASEO_HOSTNAMES:-true}"
   echo "[entrypoint] PASEO_ENABLE=true — starting paseo daemon on ${PASEO_LISTEN}"
   echo "[entrypoint]   hostnames allowlist: ${PASEO_HOSTNAMES}"
   echo "[entrypoint]   pair from your phone: open paseo, scan the QR code printed below"
-  exec paseo daemon start
+  exec paseo daemon start --foreground --no-relay
 fi
 
 # Opencode-web: HTTP Basic (username "opencode", password from env).
