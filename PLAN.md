@@ -3,7 +3,7 @@
 An opinionated, minimum-moving-parts setup for running opencode and claude
 code autonomously on your existing Linux host — agent in a locked-down
 container, code bind-mounted from the host, read-only GitHub PAT as the
-structural guarantee that nothing pushes.
+structural guarantee that HTTPS pushes using that PAT fail.
 
 Read top to bottom once before running. `CHECKLIST.md` is the post-setup
 verification drill.
@@ -35,8 +35,8 @@ compromise exfiltrating through `api.anthropic.com`, or physical access.
 
 | Risk | Why we accept it | Mitigation if it fires |
 |---|---|---|
-| Prompt injection causes destructive action in `~/vivarium-work` | Structural — the agent must write to work | 2-hour rsync snapshots |
-| Malicious postinstall corrupts the work dir | We disable scripts by default; some projects need them | Snapshots + `docker compose down && up` resets container state |
+| Prompt injection causes destructive action in `~/vivarium-home/work` | Structural — the agent must write to work | 2-hour rsync snapshots |
+| Malicious postinstall corrupts the work dir | We disable scripts by default; some projects need them | Snapshots restore the work dir; `docker compose restart` only restarts processes and reapplies startup config |
 | Runaway spend (pay-per-token only) | Session caps don't cover loops across sessions | Provider-console hard monthly cap. Subscriptions are rate-limited → capped |
 | Secret exposure to a session that used it | If the agent holds the key, it has the key | Per-project scoped keys + rotation |
 | Container-escape CVE (shared kernel) | Sandboxes have CVEs; Docker is hardened but not perfect | Non-root user, `cap_drop: ALL`, `no-new-privileges`, no `/var/run/docker.sock` mount |
@@ -47,12 +47,12 @@ compromise exfiltrating through `api.anthropic.com`, or physical access.
 
 ```
     ┌──────────────────────────────────────────────────┐
-    │ 1. HOST (your existing Linux VM)                 │
+    │ 1. HOST (your Linux host)                        │
     │                                                  │
     │   ┌────────────────────────────────────────┐     │
     │   │ 2. CONTAINER `vivarium`                │     │
     │   │    • ubuntu 24.04 base                 │     │
-    │   │    • runs as UID 1000 (non-root)       │     │
+    │   │    • runs as configured host UID/GID    │     │
     │   │    • cap_drop: ALL + no-new-privileges │     │
     │   │    • no docker.sock, not privileged    │     │
     │   │    • no SSH client useful for pushing  │     │
@@ -71,12 +71,14 @@ compromise exfiltrating through `api.anthropic.com`, or physical access.
 
 Each layer independently blocks a class of harm:
 
-- Container escape → still a non-root user on the host (and your host user
-  has no write access to other users' data).
+- Container escape → when setup is run as a non-root host user, the container
+  UID/GID is non-root (and your host user has no write access to other users'
+  data).
 - Something runs unexpectedly in the container → the only write-accessible
-  path outside the container is `~/vivarium-home`, which is snapshotted.
-- Agent tries to `git push` → read-only PAT returns 403 regardless of what
-  the agent does inside.
+  path outside the container is `~/vivarium-home`; `backup.sh` snapshots its
+  `work/` subdirectory.
+- Agent tries to `git push` over HTTPS with the configured read-only PAT →
+  GitHub returns 403.
 
 ### What we explicitly dropped vs. the original VM plan
 
@@ -84,7 +86,7 @@ Each layer independently blocks a class of harm:
 |---|---|
 | Claude's `sandbox.filesystem` + `network` allowlist | The container namespace is the filesystem fence. The PAT is the real push blocker. Allowlist was maintenance tax with marginal extra value. |
 | UID-based host iptables rule | Docker writes its own iptables rules; our rule could conflict. Container net ns is the isolation instead. |
-| Dedicated OS user `keeper` | Container UID 1000 is the "keeper" — inside the namespace, not on the host. |
+| Dedicated OS user `keeper` | The container `vivarium` user is built with the configured host UID/GID — inside the namespace, not as a separate host OS user. |
 | `netfilter-persistent`, `apt` install choreography | All baked into the image once. |
 
 ---
@@ -101,7 +103,8 @@ cd ~/vivarium
 
 `up.sh` writes `.env` with your host UID/GID and default agent selection
 (opencode only), builds the image (first build: ~3 min), and starts the
-container detached. It's idempotent — safe to re-run.
+container detached. Run it as your normal non-root host user, not with `sudo`,
+so the container UID/GID are non-root. It's idempotent — safe to re-run.
 
 **Agent selection**: by default the image bakes in `opencode`. To also bake
 in `claude` code, edit `.env` and set `INSTALL_CLAUDE=true`, then re-run
@@ -114,21 +117,22 @@ pointing at the flag to flip.
 
 ```bash
 ./scripts/shell.sh         # drops into /home/vivarium/work
-opencode auth login        # pick provider, follow the OAuth flow
+opencode auth login        # default install: pick provider, follow OAuth
+# or, if INSTALL_CLAUDE=true:
+claude                     # follow claude's first-run auth prompt
 ```
 
 For opencode: your subscription (Claude Pro/Max, Copilot, ChatGPT Plus/Pro)
 is the billing model. Rate limits cap runaway spend; no console config
 needed.
 
-For claude code (optional, API-billed): `claude` on first run prompts for
-auth. If you use this, set a hard monthly cap on the key in the Anthropic
-console.
+For claude code: `claude` is present only when `INSTALL_CLAUDE=true`. If you
+use API billing, set a hard monthly cap on the key in the Anthropic console.
 
 ### 3.3 GitHub PAT — the structural push-blocker
 
-The single most important step. This is what makes "never pushes" a
-structural guarantee instead of a policy hope.
+The single most important step. With a correctly scoped token, this makes
+HTTPS push failure a structural guarantee instead of a policy hope.
 
 1. github.com → Settings → Developer settings → **Personal access tokens →
    Fine-grained tokens** → Generate new token.
@@ -142,8 +146,8 @@ structural guarantee instead of a policy hope.
    |---|---|
    | **Metadata** | **Read** *(mandatory — GitHub requires it)* |
    | **Contents** | **Read** *(lets you clone and pull)* |
-   | **Issues** | **Read** *(so the agent can see issue bodies)* |
-   | **Pull requests** | **Read** *(PR history / review comments)* |
+   | **Issues** | **Read** *(optional — lets the agent see issue bodies)* |
+   | **Pull requests** | **Read** *(optional — PR history / review comments)* |
    | **Administration** | **No access** *(critical — blocks repo creation/settings)* |
    | **Secrets** | **No access** *(critical — never grant)* |
    | **Workflows** | **No access** *(critical — a compromised Action is a persistent backdoor)* |
@@ -153,7 +157,8 @@ structural guarantee instead of a policy hope.
    include "create gists," "email addresses," "profile" — the scariest
    scopes.
 
-After creation the token summary should list 3–5 `Read` lines and nothing
+After creation the token summary should list only the selected `Read` lines
+(usually Metadata + Contents, optionally Issues and Pull requests) and nothing
 with `Write` or any account scope. If it shows anything more, regenerate.
 
 **Verify the token cannot push**, inside the container:
@@ -185,12 +190,10 @@ Both are idempotent. `cron-install.sh` replaces any existing vivarium
 entries and leaves unrelated crontab lines alone. `cron-uninstall.sh` only
 touches vivarium lines — your backup directory and log files are untouched.
 
-Snapshots go to `~/vivarium-backup/hourly-HH/` (overwritten each day),
-`~/vivarium-backup/daily-N/` (day-of-week, 7-day rolling), and
-`~/vivarium-backup/weekly-N/` (8-slot, ~56-day rolling, refreshed
-Sunday 03:00). The weekly tier exists so a slow compromise that has
-poisoned the daily lineage before discovery still has clean ground to
-restore from.
+Default cron runs `backup.sh` every 2 hours on even hours. Those automatic
+runs write `~/vivarium-backup/hourly-HH/` slots. `backup.sh` also contains
+daily and weekly branches for invocations during hour 03, but the default cron
+line does not run during hour 03.
 
 ### 3.5 MCP servers (optional)
 
@@ -233,16 +236,9 @@ If you flip `INSTALL_BESTIARY=false` later, the binary is gone but the
 config entry stays — agents will log a launch failure for the missing
 server. Remove the entry by hand if you don't want it anymore.
 
-Tools that need API keys: drop a per-tool env file in
-`~/vivarium-home/.env.d/<tool>.env` (mode 600) and `source` it before
-launching the agent. Same pattern as §5. Bestiary's built-in `reddit` needs
-no auth — it hits public JSON endpoints.
-
-To trim what's loaded into the LLM's context per session:
-
-```bash
-BESTIARY_ENABLED=reddit opencode    # only register reddit, ignore other tools
-```
+Tools that need API keys: keep the key in a manually managed env file with
+mode 600 and `source` it before launching the agent. Same pattern as §5.
+Bestiary's built-in `reddit` needs no auth — it hits public JSON endpoints.
 
 Bestiary install fails fast with a `[FATAL]` message naming the flag to
 flip — same pattern as opencode/claude.
@@ -304,13 +300,14 @@ If a session weirds out, pick the right nuke button:
 
 ### The recipe
 
-One `.env` per project, inside the project, mode 600. The global gitignore
-(baked into the container via entrypoint) ignores `.env*`, `*.pem`, `*.key`,
-so they can't accidentally commit.
+One `.env` per project, inside the project, mode 600. This repo does not
+install a global gitignore, so each project must ignore its own secret files.
+Before sourcing a project `.env`, make sure that file is untracked and ignored.
 
 ```bash
 # inside the container:
 cd ~/work/myproject
+git status --short .env
 set -a; source .env; set +a
 opencode
 ```
@@ -356,8 +353,8 @@ Defenses:
   projects that need scripts opt in explicitly with `--ignore-scripts=false`.
 - Prefer `uv` over `pip` — wheels don't execute setup.py; sdists still do.
 - Pin versions. Commit lockfiles. Review additions from new authors manually.
-- **Snapshots make this recoverable**. If `~/vivarium-work` gets corrupted,
-  `rsync -a --delete ~/vivarium-backup/hourly-HH/ ~/vivarium-work/` puts it
+- **Snapshots make this recoverable**. If `~/vivarium-home/work` gets corrupted,
+  `rsync -a --delete ~/vivarium-backup/hourly-HH/ ~/vivarium-home/work/` puts it
   back in 2 seconds.
 
 ### 6.2 Git hooks
@@ -380,7 +377,7 @@ The agent can `rm -rf ~/work/old-project`. Same answer: snapshots.
 
 Real, not theoretical. Mitigations layered in `compose.yaml`:
 
-- Runs as non-root (UID 1000).
+- Runs as the configured host UID/GID (non-root when `up.sh` is run by a non-root host user).
 - `cap_drop: ALL` plus a minimal `cap_add` list.
 - `no-new-privileges:true`.
 - No Docker socket mount, not `--privileged`.
@@ -395,8 +392,8 @@ this naturally; just reboot occasionally.
 We deliberately dropped the network allowlist (see §2). A compromised
 session *can* `curl evil.com`. The guards that still hold:
 
-- The read-only PAT gives the session nothing sensitive to exfiltrate from
-  your GitHub account (can't create gists, can't write to any repo).
+- The read-only PAT has no write or account-level permissions. It can read
+  the selected repositories and any optional read scopes you grant.
 - Your LLM subscription OAuth token could be exfiltrated — revoke from the
   provider's console if suspicious activity appears.
 - Per-project secrets you source temporarily are in env while running — rate
@@ -471,13 +468,15 @@ cd ~/vivarium
 ./scripts/update.sh
 ```
 
-Fast-forwards `main` from origin and rebuilds the image if there were any
-new commits. Refuses to run if your working tree is dirty. Skips the
-rebuild entirely if you're already at the latest commit.
+Fast-forwards `main` from origin when there are new commits. Refuses to run
+if tracked unstaged or staged changes exist; untracked files are not checked.
+After the fetch/merge path succeeds, it calls `./scripts/up.sh`, which rebuilds
+with Docker's cache and starts the container.
 
 Persistent state in `~/vivarium-home/` (auth, code, configs) survives the
 rebuild — that directory is a bind mount from the host, untouched by image
-changes. In-container processes (opencode sessions, tmux) **are** killed.
+changes. In-container processes (agent sessions, tmux) may be killed if Docker
+Compose recreates the container.
 
 If you've enabled new optional features in `.env` (e.g. flipping
 `INSTALL_BESTIARY=true`), edit `.env` first, then run `update.sh`.
@@ -537,7 +536,7 @@ What we considered and did **not** do, so you know the design is intentional:
 
 ```bash
 ls -lt ~/vivarium-backup/hourly-*/    # find a clean one
-rsync -a --delete ~/vivarium-backup/hourly-14/myproject/ ~/vivarium-work/myproject/
+rsync -a --delete ~/vivarium-backup/hourly-14/myproject/ ~/vivarium-home/work/myproject/
 ```
 
 ### "An install looked suspicious mid-session"
@@ -578,7 +577,7 @@ host touched, then investigate.
 
 ### "API spend spiked" (pay-per-token only)
 
-1. Revoke the VM's API key in provider console.
+1. Revoke the provider API key used from vivarium.
 2. Verify the hard monthly cap exists; if not, set one now.
 3. `docker logs vivarium | tail -n 500` to see what it was doing.
 4. Issue a new scoped key.
@@ -591,7 +590,7 @@ Setup is complete when:
 
 - [ ] `./scripts/up.sh` completes; `docker ps` shows `vivarium` running
 - [ ] `./scripts/shell.sh` drops you into `/home/vivarium/work`
-- [ ] `opencode auth login` succeeded with your subscription provider
+- [ ] Auth succeeded for the installed agent CLI (`opencode auth login` by default)
 - [ ] A test `git clone` over HTTPS works inside the container
 - [ ] A test `git push` fails with 403 (PAT is read-only)
 - [ ] Backup cron added; `scripts/backup.sh` run manually produced a
