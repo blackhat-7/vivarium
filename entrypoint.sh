@@ -83,6 +83,19 @@ if command -v bestiary >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     "bestiary MCP"
 fi
 
+# Auto-allow OpenCode paths outside the cwd. Vivarium's Docker boundary is
+# the sandbox; OpenCode's external_directory prompts for in-container paths
+# like /tmp/pi-coding-agent-* add friction without shrinking host blast
+# radius. Only ADDS the key if permission is absent or an object missing the
+# key: explicit scalar user settings ("ask"/"deny"/"allow") win.
+if command -v opencode >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  wire_mcp_entry \
+    "$HOME/.config/opencode/opencode.json" \
+    '(.permission? != null and (.permission | type) != "object") or (.permission.external_directory? != null)' \
+    'if (.permission? == null or (.permission | type) == "object") then .permission.external_directory = "allow" else . end' \
+    "opencode external_directory permission"
+fi
+
 # Auto-allow full agent autonomy for claude code, matching opencode's
 # default. The vivarium container is the sandbox — its threat model already
 # accepts that an agent inside has unrestricted access to ~/vivarium-home;

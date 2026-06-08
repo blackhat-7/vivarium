@@ -22,6 +22,7 @@ Walk through once. When every box is checked, the vivarium is ready.
 - [ ] If `INSTALL_OPENCODE=true`: `opencode --version` prints a version
 - [ ] If `INSTALL_CLAUDE=true`: `claude --version` prints a version
 - [ ] If using opencode: `opencode auth login <provider>` completed; auth stored under `~/.config/opencode/`
+- [ ] If using opencode: `~/.config/opencode/opencode.json` allows `permission.external_directory` (auto-wired by entrypoint when missing)
 - [ ] `git config --global --get core.hooksPath` returns `/dev/null`
 - [ ] `git config --global --get credential.helper` returns `cache --timeout=86400`
 - [ ] `npm config get ignore-scripts` returns `true`

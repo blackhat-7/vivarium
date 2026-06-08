@@ -43,7 +43,7 @@ Container facts from `compose.yaml` and `Dockerfile`:
 |---|---|
 | `Dockerfile` | Builds the Ubuntu image, installs system tools, optional agent CLIs, optional bestiary, creates the `vivarium` user from the configured UID/GID, and sets the entrypoint. |
 | `compose.yaml` | Builds/runs the `vivarium` service with the bind mount, hardening, limits, and restart policy. |
-| `entrypoint.sh` | Initializes home on first run, reapplies git safety config on every start, creates `~/work`, auto-wires bestiary MCP config when available, auto-adds Claude bypass permissions when available, and can start paseo when enabled. |
+| `entrypoint.sh` | Initializes home on first run, reapplies git safety config on every start, creates `~/work`, auto-wires bestiary MCP config when available, auto-allows OpenCode external directories when missing, auto-adds Claude bypass permissions when available, and can start paseo when enabled. |
 | `.env.example` | Template for values that Docker Compose and scripts use. |
 | `scripts/up.sh` | Creates/updates `.env`, creates the host home/work directory, builds the image, and starts the container. |
 | `scripts/shell.sh` | Starts the container if needed, then opens `bash` inside it. |
@@ -151,6 +151,8 @@ flowchart TD
   warn[Print ownership warning]
   bestiary{bestiary and jq available?}
   mcp[Add missing bestiary MCP entries]
+  opencode{opencode and jq available?}
+  external[Add missing OpenCode external_directory allow]
   claude{claude and jq available?}
   bypass[Add missing Claude bypassPermissions setting]
   paseo{PASEO_ENABLE=true and paseo available?}
@@ -163,8 +165,10 @@ flowchart TD
   migrate --> gitcfg --> creds --> work --> writable
   writable -->|no| warn --> bestiary
   writable -->|yes| bestiary
-  bestiary -->|yes| mcp --> claude
-  bestiary -->|no| claude
+  bestiary -->|yes| mcp --> opencode
+  bestiary -->|no| opencode
+  opencode -->|yes| external --> claude
+  opencode -->|no| claude
   claude -->|yes| bypass --> paseo
   claude -->|no| paseo
   paseo -->|yes| startpaseo
@@ -208,6 +212,14 @@ If bestiary is installed, `entrypoint.sh` adds missing entries only:
 ```
 
 Existing bestiary entries are left unchanged. Invalid JSON causes a warning and is not overwritten.
+
+If opencode is installed, `entrypoint.sh` adds this missing key only:
+
+```json
+{ "permission": { "external_directory": "allow" } }
+```
+
+The file is `~/.config/opencode/opencode.json`. Existing `permission.external_directory` is left unchanged. Explicit scalar `permission` settings (`"ask"`, `"deny"`, or `"allow"`) are treated as user intent and left unchanged.
 
 If claude is installed, `entrypoint.sh` adds this missing key only:
 

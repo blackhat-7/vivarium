@@ -124,7 +124,10 @@ claude                     # follow claude's first-run auth prompt
 
 For opencode: your subscription (Claude Pro/Max, Copilot, ChatGPT Plus/Pro)
 is the billing model. Rate limits cap runaway spend; no console config
-needed.
+needed. On container start, `entrypoint.sh` also adds a missing
+`permission.external_directory = "allow"` to OpenCode config so helper paths
+inside the container (for example `/tmp/pi-coding-agent-*`) do not pause for
+approval; the Docker boundary is the sandbox.
 
 For claude code: `claude` is present only when `INSTALL_CLAUDE=true`. If you
 use API billing, set a hard monthly cap on the key in the Anthropic console.
