@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # system tools + node 20 in one apt pass.
 # openssh-client is deliberately omitted: the read-only PAT is the structural
 # push-blocker only over HTTPS; an SSH key the user (or a confused agent)
-# drops in ~/.ssh would silently bypass it. PLAN.md §2 architecture box.
+# drops in ~/.ssh would silently bypass it.
 #
 # BuildKit cache mounts keep the .deb downloads on the host between rebuilds,
 # so a busted layer here re-runs apt but skips the ~150 MB network fetch.
@@ -99,8 +99,7 @@ RUN if [ "$INSTALL_BESTIARY" = "true" ]; then \
 # skeleton that gets copied to /home/vivarium on first run.
 # $HOME/.local/bin is *appended* to PATH (not prepended): user-local
 # installs (pip --user, uvx, pipx, cargo) resolve, but a planted
-# ~/.local/bin/git cannot shadow /usr/bin/git for future shells. See
-# PLAN.md §6.7.
+# ~/.local/bin/git cannot shadow /usr/bin/git for future shells.
 RUN mkdir -p /opt/vivarium/skel \
  && printf '%s\n' \
       'export PATH="$PATH:$HOME/.local/bin"' \

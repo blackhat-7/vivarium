@@ -1,70 +1,71 @@
 # vivarium
 
-> *a place where living things are kept*
-
-A Docker-based enclosure for running **opencode** and **claude-code**
-autonomously on a Linux host — reading freely across repos, writing locally,
-and relying on a correctly configured fine-grained read-only GitHub PAT so
-HTTPS pushes fail. Three layers of isolation: host, container, and PAT. No
-in-app sandbox configs to maintain, no iptables rules on the host, no dedicated
-VM required.
-
-Run setup as your normal non-root host user, not with `sudo`; the container
-user is built from that UID/GID. Your code lives in a bind-mounted directory
-on the host (`~/vivarium-home/work/` by default). A fine-grained read-only PAT
-is the structural reason HTTPS pushes using that PAT fail. If a session goes
-sideways, `docker compose restart` restarts the container.
-
-## Layout
-
-```
-vivarium/
-├── README.md               you are here
-├── DOCS.md                 implementation-accurate feature docs
-├── PLAN.md                 threat model, architecture, setup, secrets, audits
-├── CHECKLIST.md            pre-flight + post-setup verification
-├── Dockerfile              the image (ubuntu 24.04 + optional agents + uv + node + git)
-├── compose.yaml            runtime: mounts, user, caps, limits, restart policy
-├── entrypoint.sh           bootstraps the user home on first run
-├── .env.example            template for UID/GID, install flags, and bestiary config
-└── scripts/
-    ├── up.sh               build image + start container
-    ├── update.sh           pull latest code from origin and rebuild (preserves ~/vivarium-home)
-    ├── shell.sh            drop into the container
-    ├── remove.sh           tear down — container, image, cron; optional flags nuke data/backups/repo
-    ├── cron-install.sh     add backup-every-2h + audit-monthly entries to your crontab
-    ├── cron-uninstall.sh   remove them
-    ├── backup.sh           host-side rsync of the work dir (cron'd every 2h)
-    └── audit.sh            host-side monthly drift check
-```
+A Docker-based sandbox for running coding agents on a Linux host with a bounded
+blast radius. Agents can work freely inside `~/vivarium-home/work`; the host is
+protected by Docker isolation, a non-root container user, backups, and a
+read-only GitHub PAT.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/blackhat-7/vivarium.git ~/vivarium
 cd ~/vivarium
-./scripts/up.sh              # first time: ~3 min to build
-./scripts/shell.sh           # you are now in /home/vivarium/work inside the container
-
-# inside the container, one-time if using the default opencode install:
-opencode auth login          # pick provider, complete the OAuth flow
-git clone https://github.com/YOU/some-repo.git   # paste read-only PAT
+./scripts/up.sh
+./scripts/shell.sh
 ```
 
-After that, daily life is `./scripts/shell.sh` → `cd some-project` → run the installed agent CLI (`opencode` by default; `claude` if enabled).
+Inside the container:
 
-## For agents working on this repo
+```bash
+opencode auth login        # default agent
+cd ~/work
+git clone https://github.com/YOU/repo.git
+```
 
-See `AGENTS.md`. Red lines are non-negotiable.
+Use a **fine-grained, repo-scoped, read-only GitHub PAT** for clones. Pushes
+with that token should fail.
 
-## Why Docker (not a dedicated VM)
+## Safety invariants
 
-The original plan assumed a fresh dedicated Hetzner VM. On a VM that's
-already running Docker + Tailscale + Nix + a personal account, adding
-host-level iptables rules and a second unprivileged OS user risks conflicting
-with the host's existing setup — and dilutes the "isolated sandbox user"
-concept since you share an OS with Tailscale, Docker, etc.
+Do not weaken these:
 
-The container approach gives you equivalent (or better) isolation for
-realistic threats, trivial reset, and far less host pollution. See `PLAN.md`
-§2 for the full layer comparison.
+- container runs as non-root: final Dockerfile stage is `USER vivarium`
+- no `/var/run/docker.sock` mount
+- no `--privileged`
+- `cap_drop: ALL` stays enabled
+- GitHub PAT is fine-grained, selected-repo, read-only only
+- optional installs fail fast with `[FATAL]`
+- scripts preserve user state and only delete data behind explicit flags
+
+## Current commands
+
+```bash
+./scripts/up.sh              # create .env, build image, start container
+./scripts/shell.sh           # enter container
+./scripts/update.sh          # fast-forward repo and rebuild
+./scripts/backup.sh          # snapshot ~/vivarium-home/work
+./scripts/audit.sh           # host-side drift/safety check
+./scripts/cron-install.sh    # install backup/audit cron entries
+./scripts/cron-uninstall.sh  # remove vivarium cron entries
+./scripts/remove.sh          # remove container/image/cron; optional data deletion
+```
+
+## Files
+
+- `Dockerfile` — Ubuntu image, non-root user, optional agent installs
+- `compose.yaml` — runtime hardening, mount, limits, restart policy
+- `entrypoint.sh` — home bootstrap and startup safety config
+- `.env.example` — config template
+- `DOCS.md` — concise implementation notes
+
+## Planned additions
+
+- [ ] `vivarium doctor` — prove safety invariants with one command
+- [ ] `vivarium panic` — stop bad sessions, clear volatile creds, print recovery steps
+- [ ] `vivarium snapshots` — list available backups
+- [ ] `vivarium restore` — safely restore a repo or work dir from backup
+- [ ] profiles — separate homes/backups/limits for `personal`, `work`, `risky`, etc.
+- [ ] audit timeline — summarize changed repos, secret-like files, MCP drift, and git config drift
+- [ ] red-team demo — show common escape/persistence attempts failing
+- [ ] red-line tests — automated checks for Dockerfile/compose/security invariants
+- [ ] optional Go host CLI if the command surface grows; keep Docker/compose/entrypoint simple

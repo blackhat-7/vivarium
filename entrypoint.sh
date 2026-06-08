@@ -1,7 +1,7 @@
 #!/bin/bash
 # vivarium container entrypoint — bootstraps the user home from /opt/vivarium/skel
 # on first run, and re-applies safety-critical config every container start.
-# See PLAN.md §6.2 (hooks) and §6.7 (persistence vectors).
+# Keep startup safety config idempotent; it protects against persistence vectors.
 
 set -e
 
