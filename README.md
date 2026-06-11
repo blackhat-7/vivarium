@@ -60,11 +60,11 @@ Do not weaken these:
 
 ## Planned additions
 
+- [ ] profiles — separate homes/backups/limits for `personal`, `work`, `risky`, etc.
 - [ ] `vivarium doctor` — prove safety invariants with one command
 - [ ] `vivarium panic` — stop bad sessions, clear volatile creds, print recovery steps
 - [ ] `vivarium snapshots` — list available backups
 - [ ] `vivarium restore` — safely restore a repo or work dir from backup
-- [ ] profiles — separate homes/backups/limits for `personal`, `work`, `risky`, etc.
 - [ ] audit timeline — summarize changed repos, secret-like files, MCP drift, and git config drift
 - [ ] red-team demo — show common escape/persistence attempts failing
 - [ ] red-line tests — automated checks for Dockerfile/compose/security invariants
