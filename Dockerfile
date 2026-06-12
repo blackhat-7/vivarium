@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# system tools + node 20 in one apt pass.
+# system tools + node 24 in one apt pass.
 # openssh-client is deliberately omitted: the read-only PAT is the structural
 # push-blocker only over HTTPS; an SSH key the user (or a confused agent)
 # drops in ~/.ssh would silently bypass it.
@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       gnupg2 pass \
       python3 python3-pip python3-venv python-is-python3 \
       unzip xz-utils \
- && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
  && npm config set ignore-scripts true -g

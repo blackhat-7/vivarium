@@ -29,7 +29,7 @@ From `compose.yaml`:
 ## Image contents
 
 Base tools include git, curl, tmux, editors, build tools, ripgrep, fd, jq,
-sqlite, Python, Node 20, npm, and uv.
+sqlite, Python, Node 24, npm, and uv.
 
 Optional build flags:
 
