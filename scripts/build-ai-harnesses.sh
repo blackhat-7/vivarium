@@ -29,6 +29,12 @@ esac
 
 if ! command -v nix >/dev/null 2>&1; then
   mkdir -p /nix
+  if ! getent group nixbld >/dev/null; then
+    groupadd -r nixbld
+    for n in $(seq 1 10); do
+      useradd -r -g nixbld -G nixbld -d /var/empty -s /usr/sbin/nologin "nixbld$n"
+    done
+  fi
   curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon
 fi
 export PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH
