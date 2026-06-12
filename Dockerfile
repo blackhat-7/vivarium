@@ -129,7 +129,9 @@ ARG TARGETARCH
 ARG AI_HARNESSES_REF=main
 ARG AI_HARNESSES_MCP=none
 RUN chmod +x /usr/local/bin/build-ai-harnesses.sh \
- && /usr/local/bin/build-ai-harnesses.sh "$AI_HARNESSES_REF" "$AI_HARNESSES_MCP"
+ && /usr/local/bin/build-ai-harnesses.sh "$AI_HARNESSES_REF" "$AI_HARNESSES_MCP" \
+ && printf '%s\n' '#!/bin/sh' 'exec "$HOME/.npm-global/bin/pi" "$@"' > /usr/local/bin/pi \
+ && chmod +x /usr/local/bin/pi
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
