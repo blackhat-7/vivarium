@@ -17,6 +17,7 @@ fi
 # Idempotent: no-op if the line is already in safe form or absent.
 sed -i 's|^export PATH="\$HOME/\.local/bin:\$PATH"$|export PATH="$PATH:$HOME/.local/bin"|' "$HOME/.bashrc" 2>/dev/null || true
 grep -q '\.npm-global/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$PATH:$HOME/.npm-global/bin"' >> "$HOME/.bashrc"
+export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin"
 
 # Always re-apply safety-critical git config. A compromised agent can
 # flip these between starts to re-enable git hooks or swap in a
