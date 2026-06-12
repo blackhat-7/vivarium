@@ -16,6 +16,7 @@ fi
 # (pip --user, uvx, pipx) still resolve, but system binaries win.
 # Idempotent: no-op if the line is already in safe form or absent.
 sed -i 's|^export PATH="\$HOME/\.local/bin:\$PATH"$|export PATH="$PATH:$HOME/.local/bin"|' "$HOME/.bashrc" 2>/dev/null || true
+grep -q '\.npm-global/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$PATH:$HOME/.npm-global/bin"' >> "$HOME/.bashrc"
 
 # Always re-apply safety-critical git config. A compromised agent can
 # flip these between starts to re-enable git hooks or swap in a
@@ -47,69 +48,43 @@ if [ ! -w "$HOME/work" ]; then
 EOF
 fi
 
-# Auto-wire optional MCP servers into agent configs. Only ADDS missing
-# entries — never overwrites or removes user customizations. Runs every
-# container start; idempotent. Triggered by the binary's presence in the
-# image (i.e. the corresponding INSTALL_* flag was true at build time).
-wire_mcp_entry() {
-  local cfg="$1" check_expr="$2" merge_expr="$3" name="$4"
-  mkdir -p "$(dirname "$cfg")"
-  [ -f "$cfg" ] || echo '{}' > "$cfg"
-  # if entry exists, do nothing (preserves user customizations)
-  if jq -e "$check_expr" "$cfg" >/dev/null 2>&1; then
-    return 0
-  fi
-  local tmp
-  tmp=$(mktemp)
-  if jq "$merge_expr" "$cfg" > "$tmp" 2>/dev/null; then
-    mv "$tmp" "$cfg"
-    echo "[entrypoint] wired $name into $cfg"
-  else
-    rm -f "$tmp"
-    echo "[entrypoint] WARNING: could not merge $name into $cfg (invalid JSON?)" >&2
+# Re-apply AI harness configs generated at image build time. These files are
+# intentionally overwritten on every start so an agent cannot persistently
+# enable MCPs or weaken/alter harness permissions by editing its home dir.
+apply_ai_harnesses() {
+  local src=/opt/vivarium/ai-harnesses-home rel
+  [ -d "$src" ] || return 0
+
+  while IFS= read -r rel; do
+    [ -e "$src/$rel" ] || continue
+    mkdir -p "$(dirname "$HOME/$rel")"
+    rm -rf "$HOME/$rel"
+    cp -P "$src/$rel" "$HOME/$rel"
+  done <<'EOF'
+.claude/settings.json
+.claude/statusline-command.sh
+.claude/notify.sh
+.claude.json
+.config/opencode/opencode.json
+.config/opencode/package.json
+.config/opencode/plugins/readonly-bash.js
+.config/opencode/agent/reviewer.md
+.pi/agent/settings.json
+.pi/agent/readonly-bash.json
+.pi/agent/extensions/pi-permission-system/config.json
+.pi/agent/subagents.json
+.pi/agent/keybindings.json
+.pi/web-search.json
+.config/mcp/mcp.json
+.config/mcp/mcp.catalog.json
+EOF
+
+  if [ ! -x "$HOME/.npm-global/bin/pi" ] && [ -d "$src/.npm-global" ]; then
+    mkdir -p "$HOME/.npm-global"
+    cp -RP "$src/.npm-global/." "$HOME/.npm-global/"
   fi
 }
-
-if command -v bestiary >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  wire_mcp_entry \
-    "$HOME/.config/opencode/opencode.json" \
-    '.mcp.bestiary' \
-    '.mcp.bestiary = {type:"local", command:["bestiary","serve"], enabled:true}' \
-    "bestiary MCP"
-  wire_mcp_entry \
-    "$HOME/.claude.json" \
-    '.mcpServers.bestiary' \
-    '.mcpServers.bestiary = {command:"bestiary", args:["serve"]}' \
-    "bestiary MCP"
-fi
-
-# Auto-allow OpenCode paths outside the cwd. Vivarium's Docker boundary is
-# the sandbox; OpenCode's external_directory prompts for in-container paths
-# like /tmp/pi-coding-agent-* add friction without shrinking host blast
-# radius. Only ADDS the key if permission is absent or an object missing the
-# key: explicit scalar user settings ("ask"/"deny"/"allow") win.
-if command -v opencode >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  wire_mcp_entry \
-    "$HOME/.config/opencode/opencode.json" \
-    '(.permission? != null and (.permission | type) != "object") or (.permission.external_directory? != null)' \
-    'if (.permission? == null or (.permission | type) == "object") then .permission.external_directory = "allow" else . end' \
-    "opencode external_directory permission"
-fi
-
-# Auto-allow full agent autonomy for claude code, matching opencode's
-# default. The vivarium container is the sandbox — its threat model already
-# accepts that an agent inside has unrestricted access to ~/vivarium-home;
-# permission prompts inside that boundary are friction without security
-# benefit. Only ADDS the key if absent: user edits to settings.json win.
-# Reuses the wire_mcp_entry helper despite the name (it's a generic
-# "merge JSON entry if missing" function).
-if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  wire_mcp_entry \
-    "$HOME/.claude/settings.json" \
-    '.permissions.defaultMode' \
-    '.permissions.defaultMode = "bypassPermissions"' \
-    "claude bypassPermissions mode"
-fi
+apply_ai_harnesses
 
 # Optional remote-access mode: paseo daemon on :6767. Pairs with
 # desktop/mobile/web/CLI clients via QR code shown on stdout (visible in

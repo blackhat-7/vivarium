@@ -10,6 +10,7 @@ fail() { echo "  [FAIL] $*"; FAIL=$((FAIL+1)); }
 warn() { echo "  [WARN] $*"; WARN=$((WARN+1)); }
 hdr()  { echo; echo "## $*"; }
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VIVARIUM_HOME="${VIVARIUM_HOME:-$HOME/vivarium-home}"
 BACKUP_ROOT="${VIVARIUM_BACKUP:-$HOME/vivarium-backup}"
 
@@ -81,7 +82,15 @@ hdr "MCP config drift"
 if ! command -v jq >/dev/null 2>&1; then
   warn "jq not installed on host; skipping MCP drift check (apt install jq)"
 else
-  KNOWN_MCP=(bestiary)
+  MCP_SETTING=$(grep -E '^AI_HARNESSES_MCP=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+  KNOWN_MCP=()
+  if [[ -z "$MCP_SETTING" || "$MCP_SETTING" == "none" || "$MCP_SETTING" == "false" ]]; then
+    KNOWN_MCP=()
+  elif [[ "$MCP_SETTING" == "all" || "$MCP_SETTING" == "true" ]]; then
+    KNOWN_MCP=(aftershoot-mcp arxiv bestiary chrome-devtools github linear playwright)
+  else
+    IFS=, read -ra KNOWN_MCP <<< "$MCP_SETTING"
+  fi
   mcp_check() {
     local file="$1" jq_path="$2" name="$3"
     [[ -f "$file" ]] || return 0

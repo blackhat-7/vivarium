@@ -102,7 +102,7 @@ RUN if [ "$INSTALL_BESTIARY" = "true" ]; then \
 # ~/.local/bin/git cannot shadow /usr/bin/git for future shells.
 RUN mkdir -p /opt/vivarium/skel \
  && printf '%s\n' \
-      'export PATH="$PATH:$HOME/.local/bin"' \
+      'export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin"' \
       'alias ll="ls -la"' \
       'alias g=git' \
       'alias gs="git status"' \
@@ -123,6 +123,13 @@ RUN ( getent group ${GID} || groupadd -g ${GID} vivarium ) \
     fi \
  && mkdir -p /home/vivarium \
  && chown -R ${UID}:${GID} /home/vivarium
+
+COPY scripts/build-ai-harnesses.sh /usr/local/bin/build-ai-harnesses.sh
+ARG TARGETARCH
+ARG AI_HARNESSES_REF=main
+ARG AI_HARNESSES_MCP=none
+RUN chmod +x /usr/local/bin/build-ai-harnesses.sh \
+ && /usr/local/bin/build-ai-harnesses.sh "$AI_HARNESSES_REF" "$AI_HARNESSES_MCP"
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

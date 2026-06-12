@@ -22,6 +22,13 @@ cd ~/work
 git clone https://github.com/YOU/repo.git
 ```
 
+AI harness configs are baked in yolo mode. MCPs are off by default; enable only
+what you need in `.env` before `./scripts/up.sh`:
+
+```env
+AI_HARNESSES_MCP=github,bestiary   # or: none / all
+```
+
 Use a **fine-grained, repo-scoped, read-only GitHub PAT** for clones. Pushes
 with that token should fail.
 
@@ -55,6 +62,7 @@ Do not weaken these:
 - `Dockerfile` — Ubuntu image, non-root user, optional agent installs
 - `compose.yaml` — runtime hardening, mount, limits, restart policy
 - `entrypoint.sh` — home bootstrap and startup safety config
+- `scripts/build-ai-harnesses.sh` — build-time yolo ai-harnesses profile
 - `.env.example` — config template
 - `DOCS.md` — concise implementation notes
 

@@ -37,6 +37,8 @@ Optional build flags:
 - `INSTALL_CLAUDE=false` — install claude code
 - `INSTALL_PASEO=false` — install paseo
 - `INSTALL_BESTIARY=false` — install bestiary from `BESTIARY_REF`
+- `AI_HARNESSES_REF=main` — ai-harnesses ref to bake into the image
+- `AI_HARNESSES_MCP=none` — `none`, `all`, or comma-list such as `github,bestiary`
 
 At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
 
@@ -64,5 +66,5 @@ On container start, `entrypoint.sh`:
 - reapplies safe global git config
 - removes plaintext `~/.git-credentials`
 - creates `~/work`
-- wires optional bestiary/OpenCode/Claude config entries only when missing
+- reapplies baked yolo ai-harnesses configs every start
 - starts paseo only when `PASEO_ENABLE=true` and `paseo` is installed

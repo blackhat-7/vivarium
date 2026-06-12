@@ -34,22 +34,25 @@ else
   git merge --ff-only "$new_head"
 fi
 
-# bestiary cache-busting: if BESTIARY_REF is a branch/tag (not a 40-char
-# SHA), resolve it to the upstream commit SHA and override BESTIARY_REF
-# for the build. without this, docker's layer cache hits on the stale
-# "main" string forever and you'd never pick up bestiary commits.
-if grep -qE '^INSTALL_BESTIARY=true$' .env 2>/dev/null; then
-  ref=$(awk -F= '/^BESTIARY_REF=/{print $2; exit}' .env)
+resolve_ref_for_build() {
+  local env_key="$1" repo="$2" label="$3" ref sha
+  ref=$(awk -F= -v key="$env_key" '$1 == key {print $2; exit}' .env 2>/dev/null || true)
   if [ -n "$ref" ] && [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
-    sha=$(git ls-remote https://github.com/blackhat-7/bestiary.git "$ref" 2>/dev/null | head -1 | cut -f1)
+    sha=$(git ls-remote "$repo" "$ref" 2>/dev/null | head -1 | cut -f1)
     if [ -n "$sha" ]; then
-      echo "[update] bestiary $ref -> ${sha:0:12}"
-      export BESTIARY_REF="$sha"
+      echo "[update] $label $ref -> ${sha:0:12}"
+      export "$env_key=$sha"
     else
-      echo "[update] WARNING: could not resolve bestiary ref '$ref' — container may not pick up upstream changes." >&2
+      echo "[update] WARNING: could not resolve $label ref '$ref' — container may use a stale cached layer." >&2
     fi
   fi
+}
+
+# cache-bust moving refs before docker compose build.
+if grep -qE '^INSTALL_BESTIARY=true$' .env 2>/dev/null; then
+  resolve_ref_for_build BESTIARY_REF https://github.com/blackhat-7/bestiary.git bestiary
 fi
+resolve_ref_for_build AI_HARNESSES_REF https://github.com/blackhat-7/ai-harnesses.git ai-harnesses
 
 echo
 echo "[update] rebuilding (cache-hit layers stay; only changed layers rebuild)"

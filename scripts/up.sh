@@ -56,9 +56,13 @@ upsert_env INSTALL_CLAUDE false
 upsert_env INSTALL_PASEO false
 upsert_env INSTALL_BESTIARY false
 upsert_env BESTIARY_REF main
+upsert_env AI_HARNESSES_REF main
+upsert_env AI_HARNESSES_MCP none
 
 echo "[up] current agent selection:"
 grep -E '^INSTALL_(OPENCODE|CLAUDE|PASEO|BESTIARY)=' .env | sed 's/^/  /' || true
+echo "[up] current AI harness selection:"
+grep -E '^AI_HARNESSES_(REF|MCP)=' .env | sed 's/^/  /' || true
 
 # fail fast if no agent CLI is selected — same check that used to live as a
 # RUN step in the Dockerfile (moved here so it doesn't bust the apt cache).

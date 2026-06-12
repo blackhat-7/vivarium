@@ -10,6 +10,8 @@ services:
         INSTALL_PASEO: "${INSTALL_PASEO:-false}"
         INSTALL_BESTIARY: "${INSTALL_BESTIARY:-false}"
         BESTIARY_REF: "${BESTIARY_REF:-main}"
+        AI_HARNESSES_REF: "${AI_HARNESSES_REF:-main}"
+        AI_HARNESSES_MCP: "${AI_HARNESSES_MCP:-none}"
     image: vivarium:latest
     container_name: vivarium
 
