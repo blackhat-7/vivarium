@@ -98,8 +98,8 @@ vivarium_compose up -d
 
 if [[ -n "$github_read_token" ]]; then
   echo "[up] priming GitHub HTTPS read credential for normal git clone"
-  printf 'protocol=https\nhost=github.com\nusername=%s\npassword=%s\n\n' \
-    "${GITHUB_READ_USERNAME:-x-access-token}" "$github_read_token" \
+  printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n\n' \
+    "$github_read_token" \
     | vivarium_compose exec -T vivarium git credential approve >/dev/null
   unset github_read_token
 fi
