@@ -17,4 +17,4 @@ if ! vivarium_compose ps --status running --services 2>/dev/null | grep -q vivar
   "./scripts/up.sh" ${profile_arg:+"$profile_arg"}
 fi
 
-exec vivarium_compose exec vivarium bash
+vivarium_compose exec vivarium bash
