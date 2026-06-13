@@ -67,4 +67,5 @@ On container start, `entrypoint.sh`:
 - removes plaintext `~/.git-credentials`
 - creates `~/work`
 - reapplies baked yolo ai-harnesses configs every start
+- defaults `PI_OFFLINE=1` to skip Pi startup update/package checks
 - starts paseo only when `PASEO_ENABLE=true` and `paseo` is installed
