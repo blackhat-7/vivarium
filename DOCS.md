@@ -6,12 +6,12 @@ point and safety contract.
 ## Architecture
 
 - Docker image: `vivarium:latest`
-- container name: `vivarium`
+- default container name: `vivarium`; named profiles use `vivarium-<profile>`
 - base image: `ubuntu:24.04`
 - final user: `vivarium`
-- mounted home: `${VIVARIUM_HOME:-$HOME/vivarium-home}:/home/vivarium`
+- mounted home: `${VIVARIUM_HOME:-$HOME/vivarium-home[-profile]}:/home/vivarium`
 - work dir: `/home/vivarium/work`
-- default host work dir: `~/vivarium-home/work`
+- default host work dir: `~/vivarium-home/work`; profile work dirs default to `~/vivarium-home-<profile>/work`
 
 ## Runtime hardening
 
@@ -44,15 +44,20 @@ At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
 
 ## Script behavior
 
-- `scripts/up.sh` creates/updates `.env`, creates the host work dir, builds,
-  and starts the container.
-- `scripts/shell.sh` starts the container if needed and opens bash inside it.
+- Most scripts accept `[profile|env-file]`. No argument uses `.env`; a name uses
+  `profiles/<name>.env`; a path can point at an external env file.
+- `scripts/profile-create.sh` creates ignored `profiles/<name>.env` files.
+- `scripts/up.sh` creates/updates the selected env file, creates the host work
+  dir, builds, and starts the container.
+- `scripts/shell.sh` starts the selected profile if needed and opens bash.
 - `scripts/update.sh` refuses tracked local changes, fast-forwards from
-  `origin/main`, resolves moving bestiary refs, then rebuilds.
-- `scripts/backup.sh` rsyncs `VIVARIUM_HOME/work` into rotating backup slots.
-- `scripts/audit.sh` checks container state, backup freshness, repo remotes,
-  secret-like tracked files, risky git config, MCP drift, and `.ssh` files.
-- `scripts/cron-install.sh` installs backup/audit cron entries.
+  `origin/main`, resolves moving refs, then rebuilds the selected profile.
+- `scripts/backup.sh` rsyncs the selected `VIVARIUM_HOME/work` into rotating
+  backup slots.
+- `scripts/audit.sh` checks selected container state, backup freshness, repo
+  remotes, secret-like tracked files, risky git config, MCP drift, and `.ssh`
+  files.
+- `scripts/cron-install.sh` installs backup/audit cron entries for a profile.
 - `scripts/cron-uninstall.sh` removes vivarium cron entries.
 - `scripts/remove.sh` removes container/image/cron by default; `--data`,
   `--backups`, and `--everything` opt into destructive removal.

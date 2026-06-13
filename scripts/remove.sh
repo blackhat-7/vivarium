@@ -11,6 +11,7 @@
 # --everything           all of the above + delete the ~/vivarium repo itself
 # --yes / -y             skip confirmation prompts
 # --dry-run / -n         print what would be done; make no changes
+# [profile|env-file]     optional target profile/env file
 # --help / -h            this message
 
 set -euo pipefail
@@ -20,6 +21,7 @@ REMOVE_BACKUPS=false
 REMOVE_REPO=false
 SKIP_PROMPT=false
 DRY_RUN=false
+PROFILE_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,21 +34,31 @@ while [[ $# -gt 0 ]]; do
       awk '/^# /{sub(/^# ?/,""); print; next} /^[^#]/{exit}' "$0"
       exit 0
       ;;
-    *) echo "unknown flag: $1" >&2; exit 1 ;;
+    --*) echo "unknown flag: $1" >&2; exit 1 ;;
+    *)
+      [[ -z "$PROFILE_ARG" ]] || { echo "multiple profiles/env files provided" >&2; exit 1; }
+      PROFILE_ARG="$1"
+      ;;
   esac
   shift
 done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VIVARIUM_DIR="$(dirname "$HERE")"
-VIVARIUM_HOME="${VIVARIUM_HOME:-$HOME/vivarium-home}"
-VIVARIUM_BACKUP="${VIVARIUM_BACKUP:-$HOME/vivarium-backup}"
+cd "$VIVARIUM_DIR"
+# shellcheck disable=SC1091
+. ./scripts/profile.sh "$PROFILE_ARG"
 
 yep() { if $DRY_RUN; then echo "  [dry-run] $*"; else echo "  [run] $*"; eval "$@"; fi; }
 
 echo "vivarium remove plan:"
-echo "  - stop + remove container 'vivarium' (if running)"
-echo "  - remove docker image vivarium:latest (if present)"
+echo "  - profile: $VIVARIUM_PROFILE ($VIVARIUM_ENV_FILE)"
+echo "  - stop + remove container '$CONTAINER_NAME' (if running)"
+if [[ "$VIVARIUM_PROFILE" == default ]]; then
+  echo "  - remove docker image vivarium:latest (if present)"
+else
+  echo "  - keep shared docker image vivarium:latest"
+fi
 echo "  - remove vivarium cron entries"
 echo "  - remove vivarium tailnet forwarder systemd unit"
 $REMOVE_DATA    && echo "  - DELETE $VIVARIUM_HOME (your work dir + agent auth)"
@@ -59,25 +71,25 @@ if ! $SKIP_PROMPT && ! $DRY_RUN; then
   case "$reply" in [yY]|[yY][eE][sS]) ;; *) echo "aborted."; exit 0 ;; esac
 fi
 
-cd "$VIVARIUM_DIR"
-
 # container
-if docker ps -a --format '{{.Names}}' | grep -qx vivarium; then
-  yep "docker compose down --remove-orphans"
+if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  yep "docker compose --env-file '$VIVARIUM_ENV_FILE' -p '$COMPOSE_PROJECT_NAME' down --remove-orphans"
 else
-  echo "  [skip] no vivarium container"
+  echo "  [skip] no $CONTAINER_NAME container"
 fi
 
-# image
-if docker image inspect vivarium:latest >/dev/null 2>&1; then
-  yep "docker rmi vivarium:latest"
-else
-  echo "  [skip] no vivarium:latest image"
+# image (default profile only; named profiles share it)
+if [[ "$VIVARIUM_PROFILE" == default ]]; then
+  if docker image inspect vivarium:latest >/dev/null 2>&1; then
+    yep "docker rmi vivarium:latest"
+  else
+    echo "  [skip] no vivarium:latest image"
+  fi
 fi
 
 # cron
 if [ -x "$VIVARIUM_DIR/scripts/cron-uninstall.sh" ]; then
-  yep "bash '$VIVARIUM_DIR/scripts/cron-uninstall.sh'"
+  yep "bash '$VIVARIUM_DIR/scripts/cron-uninstall.sh'${PROFILE_ARG:+ '$PROFILE_ARG'}"
 fi
 
 # legacy opencode-web tailnet forwarder (removed in commit dropping opencode-web)

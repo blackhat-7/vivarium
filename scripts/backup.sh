@@ -4,8 +4,17 @@
 
 set -euo pipefail
 
-SRC="${VIVARIUM_HOME:-$HOME/vivarium-home}/work"
-DEST_ROOT="${VIVARIUM_BACKUP:-$HOME/vivarium-backup}"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+profile_arg="${1:-}"
+if [[ $# -gt 1 ]]; then
+  echo "usage: $0 [profile-name|env-file]" >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. ./scripts/profile.sh "$profile_arg"
+
+SRC="$VIVARIUM_HOME/work"
+DEST_ROOT="$VIVARIUM_BACKUP"
 HOUR_SLOT="$DEST_ROOT/hourly-$(date +%H)"
 DAY_SLOT="$DEST_ROOT/daily-$(date +%u)"
 

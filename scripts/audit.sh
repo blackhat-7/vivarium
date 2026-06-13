@@ -10,17 +10,24 @@ fail() { echo "  [FAIL] $*"; FAIL=$((FAIL+1)); }
 warn() { echo "  [WARN] $*"; WARN=$((WARN+1)); }
 hdr()  { echo; echo "## $*"; }
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VIVARIUM_HOME="${VIVARIUM_HOME:-$HOME/vivarium-home}"
-BACKUP_ROOT="${VIVARIUM_BACKUP:-$HOME/vivarium-backup}"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+profile_arg="${1:-}"
+if [[ $# -gt 1 ]]; then
+  echo "usage: $0 [profile-name|env-file]" >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. ./scripts/profile.sh "$profile_arg"
+ROOT="$VIVARIUM_ROOT"
+BACKUP_ROOT="$VIVARIUM_BACKUP"
 
-echo "=== vivarium audit — $(date -Iseconds) ==="
+echo "=== vivarium audit ($VIVARIUM_PROFILE) — $(date -Iseconds) ==="
 
 hdr "Container"
-if docker ps --format '{{.Names}}' | grep -q '^vivarium$'; then
-  pass "vivarium container is running"
+if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  pass "$CONTAINER_NAME container is running"
 else
-  fail "vivarium container not running — start with scripts/up.sh"
+  fail "$CONTAINER_NAME container not running — start with scripts/up.sh ${profile_arg}"
 fi
 
 hdr "Backups"
@@ -82,7 +89,7 @@ hdr "MCP config drift"
 if ! command -v jq >/dev/null 2>&1; then
   warn "jq not installed on host; skipping MCP drift check (apt install jq)"
 else
-  MCP_SETTING=$(grep -E '^AI_HARNESSES_MCP=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+  MCP_SETTING="${AI_HARNESSES_MCP:-none}"
   KNOWN_MCP=()
   if [[ -z "$MCP_SETTING" || "$MCP_SETTING" == "none" || "$MCP_SETTING" == "false" ]]; then
     KNOWN_MCP=()

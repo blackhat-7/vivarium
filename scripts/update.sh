@@ -11,6 +11,13 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+profile_arg="${1:-}"
+if [[ $# -gt 1 ]]; then
+  echo "usage: $0 [profile-name|env-file]" >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+. ./scripts/profile.sh "$profile_arg"
 
 # refuse to pull on top of uncommitted changes — a silent auto-merge is
 # worse than failing fast.
@@ -36,7 +43,7 @@ fi
 
 resolve_ref_for_build() {
   local env_key="$1" repo="$2" label="$3" ref sha
-  ref=$(awk -F= -v key="$env_key" '$1 == key {print $2; exit}' .env 2>/dev/null || true)
+  ref="${!env_key:-}"
   if [ -n "$ref" ] && [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
     sha=$(git ls-remote "$repo" "$ref" 2>/dev/null | head -1 | cut -f1)
     if [ -n "$sha" ]; then
@@ -49,15 +56,15 @@ resolve_ref_for_build() {
 }
 
 # cache-bust moving refs before docker compose build.
-if grep -qE '^INSTALL_BESTIARY=true$' .env 2>/dev/null; then
+if [[ "${INSTALL_BESTIARY:-}" == true ]]; then
   resolve_ref_for_build BESTIARY_REF https://github.com/blackhat-7/bestiary.git bestiary
 fi
 resolve_ref_for_build AI_HARNESSES_REF https://github.com/blackhat-7/ai-harnesses.git ai-harnesses
 
 echo
 echo "[update] rebuilding (cache-hit layers stay; only changed layers rebuild)"
-echo "[update]   ~/vivarium-home/ survives (bind mount): auth, code, configs"
+echo "[update]   $VIVARIUM_HOME survives (bind mount): auth, code, configs"
 echo "[update]   in-container processes will be killed: opencode, tmux"
 echo
 
-"$(dirname "${BASH_SOURCE[0]}")/up.sh"
+"$(dirname "${BASH_SOURCE[0]}")/up.sh" ${profile_arg:+"$profile_arg"}

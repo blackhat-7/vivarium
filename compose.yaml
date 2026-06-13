@@ -13,7 +13,7 @@ services:
         AI_HARNESSES_REF: "${AI_HARNESSES_REF:-main}"
         AI_HARNESSES_MCP: "${AI_HARNESSES_MCP:-none}"
     image: vivarium:latest
-    container_name: vivarium
+    container_name: "${CONTAINER_NAME:-vivarium}"
 
     # the whole home lives on the host so auth/creds/code survive rebuilds
     volumes:
@@ -37,7 +37,7 @@ services:
     # (e.g. PASEO_BIND_ADDR=100.64.0.3) on a rootful Docker daemon to expose
     # the listener tailnet-only, no host-side forwarder needed.
     ports:
-      - "${PASEO_BIND_ADDR:-127.0.0.1}:6767:6767"
+      - "${PASEO_BIND_ADDR:-127.0.0.1}:${PASEO_PORT:-6767}:6767"
 
     # baseline hardening — no capabilities beyond what a shell needs
     cap_drop: ["ALL"]

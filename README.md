@@ -48,15 +48,20 @@ Do not weaken these:
 ## Current commands
 
 ```bash
-./scripts/up.sh              # create .env, build image, start container
-./scripts/shell.sh           # enter container
-./scripts/update.sh          # fast-forward repo and rebuild
-./scripts/backup.sh          # snapshot ~/vivarium-home/work
-./scripts/audit.sh           # host-side drift/safety check
-./scripts/cron-install.sh    # install backup/audit cron entries
-./scripts/cron-uninstall.sh  # remove vivarium cron entries
-./scripts/remove.sh          # remove container/image/cron; optional data deletion
+./scripts/up.sh [profile|env-file]              # create env, build image, start container
+./scripts/shell.sh [profile|env-file]           # enter container
+./scripts/profile-create.sh <profile>           # create profiles/<profile>.env
+./scripts/update.sh [profile|env-file]          # fast-forward repo and rebuild
+./scripts/backup.sh [profile|env-file]          # snapshot profile work dir
+./scripts/audit.sh [profile|env-file]           # host-side drift/safety check
+./scripts/cron-install.sh [profile|env-file]    # install backup/audit cron entries
+./scripts/cron-uninstall.sh [profile|env-file]  # remove cron entries
+./scripts/remove.sh [profile|env-file]          # remove container; optional data deletion
 ```
+
+No argument uses `.env`. A profile name uses `profiles/<name>.env`; a path can
+point at an env file owned by another repo, e.g. `../server-stack/work.env`.
+For parallel Paseo profiles, set different `PASEO_PORT` values.
 
 ## Files
 
@@ -64,12 +69,12 @@ Do not weaken these:
 - `compose.yaml` — runtime hardening, mount, limits, restart policy
 - `entrypoint.sh` — home bootstrap and startup safety config
 - `scripts/build-ai-harnesses.sh` — build-time yolo ai-harnesses profile
-- `.env.example` — config template
+- `.env.example` — default config template
+- `profiles/*.env` — ignored per-profile config files
 - `DOCS.md` — concise implementation notes
 
 ## Planned additions
 
-- [ ] profiles — separate homes/backups/limits for `personal`, `work`, `risky`, etc.
 - [ ] `vivarium doctor` — prove safety invariants with one command
 - [ ] `vivarium panic` — stop bad sessions, clear volatile creds, print recovery steps
 - [ ] `vivarium snapshots` — list available backups
