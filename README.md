@@ -27,6 +27,7 @@ what you need in `.env` before `./scripts/up.sh`:
 
 ```env
 AI_HARNESSES_MCP=github,bestiary   # or: none / all
+GITHUB_MCP_TOKEN=github_pat_...    # optional, read-only token
 ```
 
 Use a **fine-grained, repo-scoped, read-only GitHub PAT** for clones. Pushes

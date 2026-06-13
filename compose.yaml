@@ -29,6 +29,9 @@ services:
     environment:
       PASEO_ENABLE: "${PASEO_ENABLE:-}"
       PASEO_HOSTNAMES: "${PASEO_HOSTNAMES:-}"
+      GITHUB_MCP_TOKEN: "${GITHUB_MCP_TOKEN:-}"
+      AFTERSHOOT_MCP_API_KEY: "${AFTERSHOOT_MCP_API_KEY:-}"
+      LINEAR_API_KEY: "${LINEAR_API_KEY:-}"
 
     # Port mapping defaults to 127.0.0.1. Bind directly to a tailscale IP
     # (e.g. PASEO_BIND_ADDR=100.64.0.3) on a rootful Docker daemon to expose
