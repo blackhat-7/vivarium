@@ -48,7 +48,8 @@ At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
   `profiles/<name>.env`; a path can point at an external env file.
 - `scripts/profile-create.sh` creates ignored `profiles/<name>.env` files.
 - `scripts/up.sh` creates/updates the selected env file, creates the host work
-  dir, builds, and starts the container.
+  dir, builds, starts the container, and if `GITHUB_READ_TOKEN` is set, pipes it
+  into the in-container Git credential cache for HTTPS clones.
 - `scripts/shell.sh` starts the selected profile if needed and opens bash.
 - `scripts/update.sh` refuses tracked local changes, fast-forwards from
   `origin/main`, resolves moving refs, then rebuilds the selected profile.

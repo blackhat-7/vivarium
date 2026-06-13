@@ -33,6 +33,11 @@ BESTIARY_REF=main
 AI_HARNESSES_REF=main
 AI_HARNESSES_MCP=none
 
+# Optional GitHub HTTPS clone token. scripts/up.sh loads this into git's
+# credential cache without passing it as container env.
+# GITHUB_READ_TOKEN=
+# GITHUB_READ_USERNAME=x-access-token
+
 # Optional MCP tokens; keep read-only / low-blast-radius.
 # GITHUB_MCP_TOKEN=
 # AFTERSHOOT_MCP_API_KEY=

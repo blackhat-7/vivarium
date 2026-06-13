@@ -11,6 +11,12 @@ fi
 # shellcheck disable=SC1091
 . ./scripts/profile.sh "$profile_arg"
 
+# Optional clone credential. Keep it as a shell-local variable so docker compose
+# does not pass it through as a normal container environment variable.
+github_read_token="${GITHUB_READ_TOKEN:-}"
+export -n GITHUB_READ_TOKEN 2>/dev/null || true
+unset GITHUB_READ_TOKEN
+
 # BuildKit: needed for the apt cache-mount in the Dockerfile and for the
 # cache-key behavior that makes ARG reordering actually pay off (a busted
 # late ARG no longer invalidates earlier layers).
@@ -89,6 +95,14 @@ vivarium_compose build
 
 echo "[up] starting container"
 vivarium_compose up -d
+
+if [[ -n "$github_read_token" ]]; then
+  echo "[up] priming GitHub HTTPS read credential for normal git clone"
+  printf 'protocol=https\nhost=github.com\nusername=%s\npassword=%s\n\n' \
+    "${GITHUB_READ_USERNAME:-x-access-token}" "$github_read_token" \
+    | vivarium_compose exec -T vivarium git credential approve >/dev/null
+  unset github_read_token
+fi
 
 echo "[up] container state:"
 vivarium_compose ps

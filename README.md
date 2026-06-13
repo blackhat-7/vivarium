@@ -26,12 +26,17 @@ AI harness configs are baked in yolo mode. MCPs are off by default; enable only
 what you need in `.env` before `./scripts/up.sh`:
 
 ```env
+# for private repo clones; scripts/up.sh loads this into git's credential cache
+# without passing it as a normal container env var
+GITHUB_READ_TOKEN=github_pat_...
+
 AI_HARNESSES_MCP=github,bestiary   # or: none / all
-GITHUB_MCP_TOKEN=github_pat_...    # optional, read-only token
+GITHUB_MCP_TOKEN=github_pat_...    # optional MCP token; exposed to MCP processes
 ```
 
-Use a **fine-grained, repo-scoped, read-only GitHub PAT** for clones. Pushes
-with that token should fail.
+Use a **fine-grained, read-only GitHub PAT** with `Contents: read-only` for
+clones. If you want agents to clone any private repo in your account, grant it
+read access to all repositories. Pushes with that token should fail.
 
 ## Safety invariants
 
@@ -41,7 +46,7 @@ Do not weaken these:
 - no `/var/run/docker.sock` mount
 - no `--privileged`
 - `cap_drop: ALL` stays enabled
-- GitHub PAT is fine-grained, selected-repo, read-only only
+- GitHub clone PAT is fine-grained, read-only only, and not passed as container env
 - optional installs fail fast with `[FATAL]`
 - scripts preserve user state and only delete data behind explicit flags
 
