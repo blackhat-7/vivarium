@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl wget git \
+      ca-certificates curl wget git gh \
       tmux vim nano less \
       build-essential pkg-config \
       ripgrep fd-find jq sqlite3 \
@@ -34,6 +34,37 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && apt-get install -y --no-install-recommends nodejs \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
  && npm config set ignore-scripts true -g
+
+# gh wrapper — use the same ephemeral GitHub HTTPS credential that
+# scripts/git-auth.sh places in git's credential cache. This avoids a separate
+# `gh auth login` token stored in ~/.config/gh/hosts.yml.
+RUN <<'EOF'
+cat > /usr/local/bin/gh <<'GH_WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
+  credential="$(
+    printf 'protocol=https\nhost=github.com\n\n' \
+      | GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.helper='cache --timeout=86400' credential fill 2>/dev/null \
+      || true
+  )"
+  token=""
+  while IFS= read -r line; do
+    case "$line" in
+      password=*) token="${line#password=}"; break ;;
+    esac
+  done <<< "$credential"
+  if [[ -n "$token" ]]; then
+    export GH_TOKEN="$token"
+  fi
+  unset credential token line
+fi
+
+exec /usr/bin/gh "$@"
+GH_WRAPPER
+chmod +x /usr/local/bin/gh
+EOF
 
 # uv — fast python package manager, system-wide
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \

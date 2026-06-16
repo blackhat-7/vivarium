@@ -20,23 +20,30 @@ Inside the container:
 opencode auth login        # default agent
 cd ~/work
 git clone https://github.com/YOU/repo.git
+# or, with the same read-only token:
+gh repo clone YOU/repo
 ```
 
 AI harness configs are baked in yolo mode. MCPs are off by default; enable only
 what you need in `.env` before `./scripts/up.sh`:
 
 ```env
-# for private repo clones; scripts/up.sh loads this into git's credential cache
-# without passing it as a normal container env var
+# for private repo clones; scripts/up.sh / scripts/git-auth.sh load this into
+# git's credential cache without passing it as a normal container env var
 GITHUB_READ_TOKEN=github_pat_...
 
 AI_HARNESSES_MCP=github,bestiary   # or: none / all
 GITHUB_MCP_TOKEN=github_pat_...    # optional MCP token; exposed to MCP processes
 ```
 
-Use a **fine-grained, read-only GitHub PAT** with `Contents: read-only` for
-clones. If you want agents to clone any private repo in your account, grant it
-read access to all repositories. Pushes with that token should fail.
+Use a **fine-grained, repo-scoped, read-only GitHub PAT** with `Metadata: read`
+and `Contents: read` for clones. Add `Issues: read` and `Pull requests: read`
+only if you want read-only `gh` issue/PR commands. If you want agents to clone
+any private repo in your account, grant it read access to all repositories.
+Pushes with that token should fail. `up.sh` and `shell.sh` auto-prime HTTPS
+cloning and read-only `gh` commands when the token is set; no separate
+`gh auth login` is needed. You can also re-prime manually with
+`./scripts/git-auth.sh [profile|env-file]`.
 
 ## Safety invariants
 
@@ -55,6 +62,7 @@ Do not weaken these:
 ```bash
 ./scripts/up.sh [profile|env-file]              # create env, build image, start container
 ./scripts/shell.sh [profile|env-file]           # enter container
+./scripts/git-auth.sh [profile|env-file]        # re-prime GitHub HTTPS clone credential
 ./scripts/profile-create.sh <profile>           # create profiles/<profile>.env
 ./scripts/update.sh [profile|env-file]          # fast-forward repo and rebuild
 ./scripts/backup.sh [profile|env-file]          # snapshot profile work dir

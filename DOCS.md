@@ -28,8 +28,10 @@ From `compose.yaml`:
 
 ## Image contents
 
-Base tools include git, curl, tmux, editors, build tools, ripgrep, fd, jq,
-sqlite, Python, Node 24, npm, and uv.
+Base tools include git, GitHub CLI (`gh`), curl, tmux, editors, build tools,
+ripgrep, fd, jq, sqlite, Python, Node 24, npm, and uv. `/usr/local/bin/gh`
+wraps `/usr/bin/gh` and supplies `GH_TOKEN` from Git's credential cache when
+available, so no separate `gh auth login` token is stored on disk.
 
 Optional build flags:
 
@@ -48,9 +50,13 @@ At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
   `profiles/<name>.env`; a path can point at an external env file.
 - `scripts/profile-create.sh` creates ignored `profiles/<name>.env` files.
 - `scripts/up.sh` creates/updates the selected env file, creates the host work
-  dir, builds, starts the container, and if `GITHUB_READ_TOKEN` is set, pipes it
-  into the in-container Git credential cache for HTTPS clones.
-- `scripts/shell.sh` starts the selected profile if needed and opens bash.
+  dir, builds, starts the container, and calls `scripts/git-auth.sh` to prime
+  the in-container Git credential cache when `GITHUB_READ_TOKEN` is set.
+- `scripts/git-auth.sh` re-primes a running container's GitHub HTTPS clone/`gh`
+  credential from `GITHUB_READ_TOKEN` without writing `~/.git-credentials`.
+- `scripts/shell.sh` starts the selected profile if needed, re-primes GitHub
+  HTTPS clone credentials for already-running containers when
+  `GITHUB_READ_TOKEN` is set, and opens bash.
 - `scripts/update.sh` refuses tracked local changes, fast-forwards from
   `origin/main`, resolves moving refs, then rebuilds the selected profile.
 - `scripts/backup.sh` rsyncs the selected `VIVARIUM_HOME/work` into rotating
