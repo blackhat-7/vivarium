@@ -140,6 +140,7 @@ RUN mkdir -p /opt/vivarium/skel \
       'export EDITOR=vim' \
       '[ -d ~/work ] && cd ~/work' \
       > /opt/vivarium/skel/.bashrc
+COPY skel/AGENTS.md /opt/vivarium/skel/AGENTS.md
 
 # non-root user — UID/GID overridden at build time to match host
 ARG UID=1000
