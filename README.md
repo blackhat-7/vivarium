@@ -81,7 +81,7 @@ For parallel Paseo profiles, set different `PASEO_PORT` values.
 - `Dockerfile` — Ubuntu image, non-root user, optional agent installs
 - `compose.yaml` — runtime hardening, mount, limits, restart policy
 - `entrypoint.sh` — home bootstrap and startup safety config
-- `skel/AGENTS.md` — default global agent rules for sandbox homes
+- `skel/AGENTS.md` — default global rules installed for Pi, opencode, and Claude Code
 - `scripts/build-ai-harnesses.sh` — build-time yolo ai-harnesses profile
 - `.env.example` — default config template
 - `profiles/*.env` — ignored per-profile config files

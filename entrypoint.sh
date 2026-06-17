@@ -88,6 +88,11 @@ EOF
 }
 apply_ai_harnesses
 
+# Re-apply global agent rules where each harness actually reads them.
+install -D -m 0644 /opt/vivarium/skel/AGENTS.md "$HOME/.pi/agent/AGENTS.md"
+install -D -m 0644 /opt/vivarium/skel/AGENTS.md "$HOME/.config/opencode/AGENTS.md"
+install -D -m 0644 /opt/vivarium/skel/AGENTS.md "$HOME/.claude/CLAUDE.md"
+
 # Optional remote-access mode: paseo daemon on :6767. Pairs with
 # desktop/mobile/web/CLI clients via QR code shown on stdout (visible in
 # `docker compose logs vivarium`). Pairing crypto is the auth.

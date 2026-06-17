@@ -75,6 +75,7 @@ At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
 On container start, `entrypoint.sh`:
 
 - copies skeleton home files, including `.bashrc` and `AGENTS.md`, only if `.bashrc` is missing
+- reapplies `skel/AGENTS.md` to Pi, opencode, and Claude Code global rule paths every start
 - appends `$HOME/.local/bin` to PATH instead of prepending it
 - reapplies safe global git config
 - removes plaintext `~/.git-credentials`
