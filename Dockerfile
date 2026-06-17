@@ -128,6 +128,19 @@ RUN if [ "$INSTALL_BESTIARY" = "true" ]; then \
       echo "[skip] INSTALL_BESTIARY=false — skipping bestiary" ; \
     fi
 
+# Nix is the slowest setup step; keep it in its own cached layer so changing
+# AI_HARNESSES_REF/MCP does not reinstall it.
+COPY scripts/build-ai-harnesses.sh /usr/local/bin/build-ai-harnesses.sh
+RUN chmod +x /usr/local/bin/build-ai-harnesses.sh \
+ && /usr/local/bin/build-ai-harnesses.sh --ensure-nix
+
+ARG TARGETARCH
+ARG AI_HARNESSES_REF=main
+ARG AI_HARNESSES_MCP=none
+RUN /usr/local/bin/build-ai-harnesses.sh "$AI_HARNESSES_REF" "$AI_HARNESSES_MCP" \
+ && printf '%s\n' '#!/bin/sh' 'exec "$HOME/.npm-global/bin/pi" "$@"' > /usr/local/bin/pi \
+ && chmod +x /usr/local/bin/pi
+
 # skeleton that gets copied to /home/vivarium on first run.
 # $HOME/.local/bin is *appended* to PATH (not prepended): user-local
 # installs (pip --user, uvx, pipx, cargo) resolve, but a planted
@@ -156,15 +169,6 @@ RUN ( getent group ${GID} || groupadd -g ${GID} vivarium ) \
     fi \
  && mkdir -p /home/vivarium \
  && chown -R ${UID}:${GID} /home/vivarium
-
-COPY scripts/build-ai-harnesses.sh /usr/local/bin/build-ai-harnesses.sh
-ARG TARGETARCH
-ARG AI_HARNESSES_REF=main
-ARG AI_HARNESSES_MCP=none
-RUN chmod +x /usr/local/bin/build-ai-harnesses.sh \
- && /usr/local/bin/build-ai-harnesses.sh "$AI_HARNESSES_REF" "$AI_HARNESSES_MCP" \
- && printf '%s\n' '#!/bin/sh' 'exec "$HOME/.npm-global/bin/pi" "$@"' > /usr/local/bin/pi \
- && chmod +x /usr/local/bin/pi
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

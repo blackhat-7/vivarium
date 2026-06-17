@@ -1,0 +1,8 @@
+# Keep Docker build context small and secret-free.
+*
+!Dockerfile
+!entrypoint.sh
+!scripts/
+!scripts/build-ai-harnesses.sh
+!skel/
+!skel/AGENTS.md

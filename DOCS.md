@@ -44,6 +44,8 @@ Optional build flags:
 - `AI_HARNESSES_MCP=none` — `none`, `all`, or comma-list such as `github,bestiary`
 
 At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
+Docker builds use an allowlisted `.dockerignore`; the Nix install is split into
+its own cached layer before the ai-harnesses profile build.
 
 ## Script behavior
 
@@ -51,8 +53,9 @@ At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
   `profiles/<name>.env`; a path can point at an external env file.
 - `scripts/profile-create.sh` creates ignored `profiles/<name>.env` files.
 - `scripts/up.sh` creates/updates the selected env file, creates the host work
-  dir, builds, starts the container, and calls `scripts/git-auth.sh` to prime
-  the in-container Git credential cache when `GITHUB_READ_TOKEN` is set.
+  dir, builds, starts the container, reapplies global agent rules, and calls
+  `scripts/git-auth.sh` to prime the in-container Git credential cache when
+  `GITHUB_READ_TOKEN` is set.
 - `scripts/git-auth.sh` re-primes a running container's GitHub HTTPS clone/`gh`
   credential from `GITHUB_READ_TOKEN` without writing `~/.git-credentials`.
 - `scripts/shell.sh` starts the selected profile if needed, re-primes GitHub

@@ -95,6 +95,17 @@ vivarium_compose build
 echo "[up] starting container"
 vivarium_compose up -d
 
+# Compose may reuse an already-running container, so entrypoint may not rerun.
+# Re-apply global rules here too to repair harness config drift on every up.
+echo "[up] reapplying global agent rules"
+vivarium_compose exec -T vivarium sh -lc '
+  src=/opt/vivarium/skel/AGENTS.md
+  [ -f "$src" ] || exit 0
+  install -D -m 0644 "$src" "$HOME/.pi/agent/AGENTS.md"
+  install -D -m 0644 "$src" "$HOME/.config/opencode/AGENTS.md"
+  install -D -m 0644 "$src" "$HOME/.claude/CLAUDE.md"
+'
+
 ./scripts/git-auth.sh ${profile_arg:+"$profile_arg"}
 
 echo "[up] container state:"

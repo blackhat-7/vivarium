@@ -79,6 +79,7 @@ For parallel Paseo profiles, set different `PASEO_PORT` values.
 ## Files
 
 - `Dockerfile` — Ubuntu image, non-root user, optional agent installs
+- `.dockerignore` — small, secret-free Docker build context
 - `compose.yaml` — runtime hardening, mount, limits, restart policy
 - `entrypoint.sh` — home bootstrap and startup safety config
 - `skel/AGENTS.md` — default global rules installed for Pi, opencode, and Claude Code

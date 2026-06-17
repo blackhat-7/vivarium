@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH
+
+ensure_nix() {
+  if ! command -v nix >/dev/null 2>&1; then
+    mkdir -p /nix
+    if ! getent group nixbld >/dev/null; then
+      groupadd -r nixbld
+      for n in $(seq 1 10); do
+        useradd -r -g nixbld -G nixbld -d /var/empty -s /usr/sbin/nologin "nixbld$n"
+      done
+    fi
+    curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon
+  fi
+  mkdir -p /etc/nix
+  printf '%s\n' 'experimental-features = nix-command flakes' > /etc/nix/nix.conf
+}
+
+if [[ "${1:-}" == "--ensure-nix" ]]; then
+  ensure_nix
+  exit 0
+fi
+
 ref="${1:-main}"
 mcp="${2:-none}"
 arch="${TARGETARCH:-amd64}"
@@ -27,19 +49,8 @@ case "${mcp//[[:space:]]/}" in
     ;;
 esac
 
-if ! command -v nix >/dev/null 2>&1; then
-  mkdir -p /nix
-  if ! getent group nixbld >/dev/null; then
-    groupadd -r nixbld
-    for n in $(seq 1 10); do
-      useradd -r -g nixbld -G nixbld -d /var/empty -s /usr/sbin/nologin "nixbld$n"
-    done
-  fi
-  curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon
-fi
-export PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH
-mkdir -p /etc/nix /opt/vivarium/ai-harnesses-profile /opt/vivarium/ai-harnesses-home
-printf '%s\n' 'experimental-features = nix-command flakes' > /etc/nix/nix.conf
+ensure_nix
+mkdir -p /opt/vivarium/ai-harnesses-profile /opt/vivarium/ai-harnesses-home
 
 cat > /opt/vivarium/ai-harnesses-profile/flake.nix <<EOF
 {
