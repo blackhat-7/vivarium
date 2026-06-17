@@ -29,9 +29,10 @@ From `compose.yaml`:
 ## Image contents
 
 Base tools include git, GitHub CLI (`gh`), curl, tmux, editors, build tools,
-ripgrep, fd, jq, sqlite, Python, Node 24, npm, and uv. `/usr/local/bin/gh`
-wraps `/usr/bin/gh` and supplies `GH_TOKEN` from Git's credential cache when
-available, so no separate `gh auth login` token is stored on disk.
+ripgrep, fd, jq, sqlite, Go, Rust/cargo, Python, Node 24, npm, and uv.
+`/usr/local/bin/gh` wraps `/usr/bin/gh` and supplies `GH_TOKEN` from Git's
+credential cache when available, so no separate `gh auth login` token is stored
+on disk.
 
 Optional build flags:
 

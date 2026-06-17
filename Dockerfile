@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# system tools + node 24 in one apt pass.
+# system tools + language toolchains + node 24 in one apt pass.
 # openssh-client is deliberately omitted: the read-only PAT is the structural
 # push-blocker only over HTTPS; an SSH key the user (or a confused agent)
 # drops in ~/.ssh would silently bypass it.
@@ -28,6 +28,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       build-essential pkg-config \
       ripgrep fd-find jq sqlite3 \
       gnupg2 pass \
+      golang-go rustc cargo \
       python3 python3-pip python3-venv python-is-python3 \
       unzip xz-utils \
  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
