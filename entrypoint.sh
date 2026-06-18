@@ -93,6 +93,12 @@ install -D -m 0644 /opt/vivarium/skel/AGENTS.md "$HOME/.pi/agent/AGENTS.md"
 install -D -m 0644 /opt/vivarium/skel/AGENTS.md "$HOME/.config/opencode/AGENTS.md"
 install -D -m 0644 /opt/vivarium/skel/AGENTS.md "$HOME/.claude/CLAUDE.md"
 
+# Optional OpenCode web UI on :4096. Docker decides where it is published.
+if [ "${OPENCODE_WEB_ENABLE:-true}" = "true" ] && command -v opencode >/dev/null 2>&1; then
+  echo "[entrypoint] OPENCODE_WEB_ENABLE=true — starting opencode web on 0.0.0.0:4096"
+  OPENCODE_SERVER_USERNAME=opencode opencode web --port 4096 --hostname 0.0.0.0 &
+fi
+
 # Optional remote-access mode: paseo daemon on :6767. Pairs with
 # desktop/mobile/web/CLI clients via QR code shown on stdout (visible in
 # `docker compose logs vivarium`). Pairing crypto is the auth.

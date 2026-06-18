@@ -14,6 +14,11 @@ cd ~/vivarium
 ./scripts/shell.sh
 ```
 
+By default, the container starts unauthenticated OpenCode web on port `4096`
+when opencode is installed. If `PASEO_BIND_ADDR` or `OPENCODE_WEB_BIND_ADDR` is
+a tailscale IP, open `http://<tailscale-ip>:4096`. Only bind this to localhost
+or a trusted tailnet.
+
 Inside the container:
 
 ```bash

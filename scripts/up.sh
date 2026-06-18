@@ -74,6 +74,7 @@ upsert_env INSTALL_BESTIARY false
 upsert_env BESTIARY_REF main
 upsert_env AI_HARNESSES_REF main
 upsert_env AI_HARNESSES_MCP none
+upsert_env OPENCODE_WEB_ENABLE true
 
 echo "[up] profile: $VIVARIUM_PROFILE ($VIVARIUM_ENV_FILE)"
 echo "[up] current agent selection:"
@@ -81,6 +82,9 @@ printf '  INSTALL_OPENCODE=%s\n  INSTALL_CLAUDE=%s\n  INSTALL_PASEO=%s\n  INSTAL
   "${INSTALL_OPENCODE:-}" "${INSTALL_CLAUDE:-}" "${INSTALL_PASEO:-}" "${INSTALL_BESTIARY:-}"
 echo "[up] current AI harness selection:"
 printf '  AI_HARNESSES_REF=%s\n  AI_HARNESSES_MCP=%s\n' "${AI_HARNESSES_REF:-}" "${AI_HARNESSES_MCP:-}"
+echo "[up] current remote UI selection:"
+printf '  OPENCODE_WEB_ENABLE=%s\n  OPENCODE_WEB_BIND_ADDR=%s\n  PASEO_ENABLE=%s\n' \
+  "${OPENCODE_WEB_ENABLE:-}" "${OPENCODE_WEB_BIND_ADDR:-${PASEO_BIND_ADDR:-127.0.0.1}}" "${PASEO_ENABLE:-}"
 
 # fail fast if no agent CLI is selected — same check that used to live as a
 # RUN step in the Dockerfile (moved here so it doesn't bust the apt cache).

@@ -43,6 +43,12 @@ Optional build flags:
 - `AI_HARNESSES_REF=main` — ai-harnesses ref to bake into the image
 - `AI_HARNESSES_MCP=none` — `none`, `all`, or comma-list such as `github,bestiary`
 
+Runtime UI flags:
+
+- `OPENCODE_WEB_ENABLE=true` — start unauthenticated `opencode web` on port `4096` by default when opencode is installed
+- `OPENCODE_WEB_BIND_ADDR` — host address for the published OpenCode port; defaults to `PASEO_BIND_ADDR`, then `127.0.0.1`
+- `PASEO_ENABLE=true` — start Paseo alongside OpenCode web
+
 At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.
 Docker builds use an allowlisted `.dockerignore`; the Nix install is split into
 its own cached layer before the ai-harnesses profile build.
@@ -85,4 +91,5 @@ On container start, `entrypoint.sh`:
 - creates `~/work`
 - reapplies baked yolo ai-harnesses configs every start
 - defaults `PI_OFFLINE=1` to skip Pi startup update/package checks
-- starts paseo only when `PASEO_ENABLE=true` and `paseo` is installed
+- starts OpenCode web when `OPENCODE_WEB_ENABLE=true` and `opencode` is installed
+- starts Paseo when `PASEO_ENABLE=true` and `paseo` is installed
