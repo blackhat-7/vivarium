@@ -47,6 +47,7 @@ Runtime UI flags:
 
 - `OPENCODE_WEB_ENABLE=true` — start unauthenticated `opencode web` on port `4096` by default when opencode is installed
 - `OPENCODE_WEB_BIND_ADDR` — host address for the published OpenCode port; defaults to `PASEO_BIND_ADDR`, then `127.0.0.1`
+- `OPENCODE_WEB_PORT=4096` — host port for OpenCode web; container still listens on `4096`
 - `PASEO_ENABLE=true` — start Paseo alongside OpenCode web
 
 At least one of `INSTALL_OPENCODE` or `INSTALL_CLAUDE` must be true.

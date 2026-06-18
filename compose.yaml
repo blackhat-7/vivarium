@@ -37,7 +37,7 @@ services:
     # listeners tailnet-only, no host-side forwarder needed. OpenCode follows
     # OPENCODE_WEB_BIND_ADDR, then PASEO_BIND_ADDR, then localhost.
     ports:
-      - "${OPENCODE_WEB_BIND_ADDR:-${PASEO_BIND_ADDR:-127.0.0.1}}:4096:4096"
+      - "${OPENCODE_WEB_BIND_ADDR:-${PASEO_BIND_ADDR:-127.0.0.1}}:${OPENCODE_WEB_PORT:-4096}:4096"
       - "${PASEO_BIND_ADDR:-127.0.0.1}:${PASEO_PORT:-6767}:6767"
 
     # baseline hardening — no capabilities beyond what a shell needs
