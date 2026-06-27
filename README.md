@@ -67,6 +67,8 @@ Do not weaken these:
 
 ```bash
 ./scripts/up.sh [profile|env-file]              # create env, build image, start container
+./scripts/rebuild.sh [profile|env-file]         # refresh moving refs, rebuild image, recreate container
+./scripts/rebuild.sh --no-cache [profile]       # fresh image rebuild; preserves vivarium home
 ./scripts/shell.sh [profile|env-file]           # enter container
 ./scripts/git-auth.sh [profile|env-file]        # re-prime GitHub HTTPS clone credential
 ./scripts/profile-create.sh <profile>           # create profiles/<profile>.env

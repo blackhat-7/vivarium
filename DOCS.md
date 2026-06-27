@@ -63,13 +63,18 @@ its own cached layer before the ai-harnesses profile build.
   dir, builds, starts the container, reapplies global agent rules, and calls
   `scripts/git-auth.sh` to prime the in-container Git credential cache when
   `GITHUB_READ_TOKEN` is set.
+- `scripts/rebuild.sh` resolves moving build refs such as `AI_HARNESSES_REF=main`
+  and `BESTIARY_REF=main` to commit SHAs, rebuilds the image, recreates the
+  container, preserves `VIVARIUM_HOME`, and supports `--no-cache`/`--fresh` for
+  a full image rebuild.
 - `scripts/git-auth.sh` re-primes a running container's GitHub HTTPS clone/`gh`
   credential from `GITHUB_READ_TOKEN` without writing `~/.git-credentials`.
 - `scripts/shell.sh` starts the selected profile if needed, re-primes GitHub
   HTTPS clone credentials for already-running containers when
   `GITHUB_READ_TOKEN` is set, and opens bash.
 - `scripts/update.sh` refuses tracked local changes, fast-forwards from
-  `origin/main`, resolves moving refs, then rebuilds the selected profile.
+  `origin/main`, then delegates to `scripts/rebuild.sh` for the selected
+  profile.
 - `scripts/backup.sh` rsyncs the selected `VIVARIUM_HOME/work` into rotating
   backup slots.
 - `scripts/audit.sh` checks selected container state, backup freshness, repo
