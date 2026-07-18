@@ -5,6 +5,19 @@ point and safety contract.
 
 ## Architecture
 
+```mermaid
+flowchart LR
+  agent[Agent runs vpush] -->|bundle + exact ref| broker[Host push gate]
+  user[User] -->|approve or deny| broker
+  broker -->|existing host SSH auth| github[GitHub]
+```
+
+The optional push gate is one host Python process shared by all profiles.
+Containers can submit and poll over a read-only-mounted Unix socket, but cannot
+approve or access host credentials. The broker imports a self-contained bundle
+into a temporary bare repository and permits only one exact create or
+fast-forward branch push. Pending requests do not expire; quotas bound storage.
+
 - Docker image: `vivarium:latest`
 - default container name: `vivarium`; named profiles use `vivarium-<profile>`
 - base image: `ubuntu:24.04`
@@ -68,6 +81,8 @@ its own cached layer before the ai-harnesses profile build.
   `VIVARIUM_HOME`, and supports `--no-cache`/`--fresh` for a full image rebuild.
 - `scripts/git-auth.sh` re-primes a running container's GitHub HTTPS clone/`gh`
   credential from `GITHUB_READ_TOKEN` without writing `~/.git-credentials`.
+- `scripts/push-gate.sh` optionally installs and runs a host-user approval broker;
+  `vpush` submits the current branch without exposing host SSH credentials.
 - `scripts/shell.sh` starts the selected profile if needed, re-primes GitHub
   HTTPS clone credentials for already-running containers when
   `GITHUB_READ_TOKEN` is set, and opens bash.

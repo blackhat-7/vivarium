@@ -1,0 +1,8 @@
+# Applied only when the shared host push gate is enabled.
+services:
+  vivarium:
+    environment:
+      VIVARIUM_PROFILE: "${VIVARIUM_PROFILE:-default}"
+      VIVARIUM_PUSH_GATE_SOCKET: /run/vivarium-push-gate/request.sock
+    volumes:
+      - "${PUSH_GATE_SOCKET_DIR:?push-gate socket directory is required}:/run/vivarium-push-gate:ro"

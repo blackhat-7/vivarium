@@ -67,6 +67,11 @@ GH_WRAPPER
 chmod +x /usr/local/bin/gh
 EOF
 
+# Optional host-approved GitHub push client. It contains no write credential;
+# direct `git push` remains blocked by the read-only PAT.
+COPY scripts/vpush /usr/local/bin/vpush
+RUN chmod 0755 /usr/local/bin/vpush
+
 # uv — fast python package manager, system-wide
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/

@@ -50,8 +50,24 @@ export CONTAINER_NAME="${CONTAINER_NAME:-$COMPOSE_PROJECT_NAME}"
 export VIVARIUM_HOME="${VIVARIUM_HOME:-$default_home}"
 export VIVARIUM_BACKUP="${VIVARIUM_BACKUP:-$default_backup}"
 
+# One optional host broker is shared by all profiles. Its config and credentials
+# never enter the container; Compose receives only the request socket path.
+PUSH_GATE_CONFIG_FILE="$HOME/.config/vivarium/push-gate.env"
+PUSH_GATE_HOST_ENABLED=false
+PUSH_GATE_SOCKET_DIR="$HOME/.local/share/vivarium-push-gate"
+if [[ -f "$PUSH_GATE_CONFIG_FILE" ]]; then
+  [[ "$(stat -c '%a:%u' "$PUSH_GATE_CONFIG_FILE" 2>/dev/null)" == "600:$(id -u)" ]] || {
+    echo "[profile] $PUSH_GATE_CONFIG_FILE must be owned by you with mode 0600" >&2
+    exit 1
+  }
+  grep -qx 'PUSH_GATE_ENABLE=true' "$PUSH_GATE_CONFIG_FILE" && PUSH_GATE_HOST_ENABLED=true
+fi
+export PUSH_GATE_CONFIG_FILE PUSH_GATE_SOCKET_DIR
+
 vivarium_compose() {
-  docker compose --env-file "$VIVARIUM_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"
+  local files=(-f "$VIVARIUM_ROOT/compose.yaml")
+  $PUSH_GATE_HOST_ENABLED && files+=(-f "$VIVARIUM_ROOT/compose.push-gate.yaml")
+  docker compose "${files[@]}" --env-file "$VIVARIUM_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"
 }
 
 resolve_build_ref() {

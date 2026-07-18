@@ -54,6 +54,28 @@ cloning and read-only `gh` commands when the token is set; no separate
 `gh auth login` is needed. You can also re-prime manually with
 `./scripts/git-auth.sh [profile|env-file]`.
 
+### Optional approved pushes
+
+The host can expose its existing GitHub SSH access without giving write
+credentials to agents. Enable one broker shared by every profile:
+
+```bash
+./scripts/push-gate.sh enable
+./scripts/up.sh [profile]
+```
+
+Inside Vivarium, `vpush` submits the current branch and prints a browser link.
+Sign in as `vivarium` with the password printed by `enable`. The host pushes
+only after the page approves the exact
+repository, commit, and branch. Direct `git push` remains blocked. The MVP
+supports canonical GitHub HTTPS origins, self-contained bundles up to 100 MiB,
+and branch creation/fast-forward only; no force, delete, tags, or Git LFS.
+
+For remote access, edit the host-only file
+`~/.config/vivarium/push-gate.env`: bind to one specific Tailscale IP and set
+`PUSH_GATE_PUBLIC_URL=http://hostname:7843`. Never use `0.0.0.0`; plain HTTP is
+safe here only because Tailscale encrypts the connection.
+
 ## Safety invariants
 
 Do not weaken these:
@@ -74,6 +96,7 @@ Do not weaken these:
 ./scripts/rebuild.sh --no-cache [profile]       # fresh image rebuild; preserves vivarium home
 ./scripts/shell.sh [profile|env-file]           # enter container
 ./scripts/git-auth.sh [profile|env-file]        # re-prime GitHub HTTPS clone credential
+./scripts/push-gate.sh <command>                 # optional host-approved pushes
 ./scripts/profile-create.sh <profile>           # create profiles/<profile>.env
 ./scripts/update.sh [profile|env-file]          # fast-forward repo and rebuild
 ./scripts/backup.sh [profile|env-file]          # snapshot profile work dir

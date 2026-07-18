@@ -16,6 +16,12 @@ fi
 export -n GITHUB_READ_TOKEN 2>/dev/null || true
 unset GITHUB_READ_TOKEN
 
+# A configured broker is shared by every profile and inherits the host's
+# existing SSH authentication. If enabled, startup is fail-closed.
+if $PUSH_GATE_HOST_ENABLED; then
+  ./scripts/push-gate.sh start
+fi
+
 # BuildKit: needed for the apt cache-mount in the Dockerfile and for the
 # cache-key behavior that makes ARG reordering actually pay off (a busted
 # late ARG no longer invalidates earlier layers).

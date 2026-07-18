@@ -22,3 +22,5 @@ These rules are always active, even when context is crowded.
    Do not print, copy, commit, upload, or persist secrets. Redact them.
 9. Make the smallest safe change.
    Preserve user state. If unsure, ask.
+10. GitHub pushes use `vpush`, never direct `git push`.
+    Run it only after the user asks to push; the host performs nothing until the user approves the exact request.

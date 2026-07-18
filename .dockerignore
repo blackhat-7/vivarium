@@ -4,5 +4,6 @@
 !entrypoint.sh
 !scripts/
 !scripts/build-ai-harnesses.sh
+!scripts/vpush
 !skel/
 !skel/AGENTS.md
