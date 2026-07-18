@@ -110,6 +110,7 @@ enable() {
   if [[ -f "$CONFIG_FILE" ]]; then
     read_config
     password=$PUSH_GATE_APPROVAL_PASSWORD; bind=$PUSH_GATE_APPROVAL_BIND_ADDR; public=$PUSH_GATE_PUBLIC_URL
+    stop_broker
   else
     password=$(random_password); bind=127.0.0.1; public=http://127.0.0.1:7843; generated=true
   fi
