@@ -203,11 +203,11 @@ class Gate:
                 if self.git(repo_dir, "rev-parse", "refs/heads/candidate").strip() != meta["new_oid"]:
                     raise RuntimeError("bundle commit does not match approval")
                 self.git(repo_dir, "fsck", "--strict", "--no-reflogs", meta["new_oid"])
-                grep = self.git_result(repo_dir, "grep", "-I", "-q", "-e", "version https://git-lfs.github.com/spec/v1", meta["new_oid"])
+                grep = self.git_result(repo_dir, "grep", "-I", "-q", "-e", "filter=lfs", meta["new_oid"], "--", ".gitattributes", ":(glob)**/.gitattributes")
                 if grep.returncode == 0:
                     raise RuntimeError("Git LFS pushes are not supported")
                 if grep.returncode != 1:
-                    raise RuntimeError("could not inspect bundle content")
+                    raise RuntimeError("could not inspect Git attributes")
                 remote = self.remote_url(meta)
                 current = self.remote_oid(repo_dir, remote, meta["ref"])
                 if current == meta["new_oid"]:
@@ -266,13 +266,13 @@ class Gate:
         return env
 
     def git_result(self, directory, *args, timeout=120):
-        command = ["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.ssh.allow=always", *args]
+        command = ["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always", *args]
         return subprocess.run(command, cwd=directory, env=self.git_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout, check=False)
 
     def git(self, directory, *args) -> str:
         result = self.git_result(directory, *args)
         if result.returncode != 0:
-            raise RuntimeError("Git validation failed")
+            raise RuntimeError(f"git {args[0]} failed")
         return result.stdout
 
 
