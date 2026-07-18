@@ -25,7 +25,13 @@ fi
 
 ref="${1:-main}"
 mcp="${2:-none}"
+pi_version="${3:-latest}"
 arch="${TARGETARCH:-amd64}"
+
+[[ "$pi_version" == latest || "$pi_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "[FATAL] invalid Pi version: $pi_version" >&2
+  exit 1
+}
 
 case "$arch" in
   amd64) system=x86_64-linux ;;
@@ -85,3 +91,13 @@ nix build /opt/vivarium/ai-harnesses-profile#homeConfigurations.vivarium.activat
 
 HOME=/opt/vivarium/ai-harnesses-home USER=root \
   /opt/vivarium/ai-harnesses-activation/activate
+
+# Supported host scripts resolve the latest stable release before the build.
+# The resolved value busts Docker's cache; verify Home Manager used that same
+# release before accepting the image and its extension packages.
+pi_home=/opt/vivarium/ai-harnesses-home
+actual_version="$(HOME="$pi_home" "$pi_home/.npm-global/bin/pi" --version)"
+if [[ "$pi_version" != latest && "$actual_version" != "$pi_version" ]]; then
+  echo "[FATAL] expected Pi $pi_version, ai-harnesses installed $actual_version" >&2
+  exit 1
+fi

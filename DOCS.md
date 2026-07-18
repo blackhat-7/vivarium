@@ -29,7 +29,7 @@ From `compose.yaml`:
 ## Image contents
 
 Base tools include git, GitHub CLI (`gh`), curl, tmux, editors, build tools,
-ripgrep, fd, jq, sqlite, Go, Rust/cargo, Python, Node 24, npm, and uv.
+ripgrep, fd, jq, sqlite, Go, Rust/cargo, Python, Node 26, npm, and uv.
 `/usr/local/bin/gh` wraps `/usr/bin/gh` and supplies `GH_TOKEN` from Git's
 credential cache when available, so no separate `gh auth login` token is stored
 on disk.
@@ -59,14 +59,13 @@ its own cached layer before the ai-harnesses profile build.
 - Most scripts accept `[profile|env-file]`. No argument uses `.env`; a name uses
   `profiles/<name>.env`; a path can point at an external env file.
 - `scripts/profile-create.sh` creates ignored `profiles/<name>.env` files.
-- `scripts/up.sh` creates/updates the selected env file, creates the host work
-  dir, builds, starts the container, reapplies global agent rules, and calls
-  `scripts/git-auth.sh` to prime the in-container Git credential cache when
-  `GITHUB_READ_TOKEN` is set.
-- `scripts/rebuild.sh` resolves moving build refs such as `AI_HARNESSES_REF=main`
-  and `BESTIARY_REF=main` to commit SHAs, rebuilds the image, recreates the
-  container, preserves `VIVARIUM_HOME`, and supports `--no-cache`/`--fresh` for
-  a full image rebuild.
+- `scripts/up.sh` creates/updates the selected env file, resolves moving build
+  refs and `PI_VERSION=latest`, creates the host work dir, builds, starts the
+  container, reapplies global agent rules, and calls `scripts/git-auth.sh` to
+  prime the in-container Git credential cache when `GITHUB_READ_TOKEN` is set.
+- `scripts/rebuild.sh` also resolves moving build refs and the latest stable Pi
+  release, rebuilds the image, recreates the container, preserves
+  `VIVARIUM_HOME`, and supports `--no-cache`/`--fresh` for a full image rebuild.
 - `scripts/git-auth.sh` re-primes a running container's GitHub HTTPS clone/`gh`
   credential from `GITHUB_READ_TOKEN` without writing `~/.git-credentials`.
 - `scripts/shell.sh` starts the selected profile if needed, re-primes GitHub
@@ -96,6 +95,10 @@ On container start, `entrypoint.sh`:
 - removes plaintext `~/.git-credentials`
 - creates `~/work`
 - reapplies baked yolo ai-harnesses configs every start
-- defaults `PI_OFFLINE=1` to skip Pi startup update/package checks
+- runs Pi from the immutable image and links baked npm/git package code into
+  the mounted home; Pi auth, sessions, MCP auth, trust, and Hermes data remain
+  mutable and persistent
+- keeps `PI_OFFLINE=1` for startup and `docker compose exec` sessions so Pi
+  skips network/package update checks against immutable package code
 - starts OpenCode web when `OPENCODE_WEB_ENABLE=true` and `opencode` is installed
 - starts Paseo when `PASEO_ENABLE=true` and `paseo` is installed

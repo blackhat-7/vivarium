@@ -77,12 +77,19 @@ upsert_env AI_HARNESSES_MCP none
 upsert_env OPENCODE_WEB_ENABLE true
 upsert_env OPENCODE_WEB_PORT 4096
 
+if [[ "${INSTALL_BESTIARY:-false}" == true ]]; then
+  resolve_build_ref BESTIARY_REF https://github.com/blackhat-7/bestiary.git bestiary
+fi
+resolve_build_ref AI_HARNESSES_REF https://github.com/blackhat-7/ai-harnesses.git ai-harnesses
+resolve_latest_release PI_VERSION https://github.com/earendil-works/pi.git Pi
+
 echo "[up] profile: $VIVARIUM_PROFILE ($VIVARIUM_ENV_FILE)"
 echo "[up] current agent selection:"
 printf '  INSTALL_OPENCODE=%s\n  INSTALL_CLAUDE=%s\n  INSTALL_PASEO=%s\n  INSTALL_BESTIARY=%s\n' \
   "${INSTALL_OPENCODE:-}" "${INSTALL_CLAUDE:-}" "${INSTALL_PASEO:-}" "${INSTALL_BESTIARY:-}"
 echo "[up] current AI harness selection:"
-printf '  AI_HARNESSES_REF=%s\n  AI_HARNESSES_MCP=%s\n' "${AI_HARNESSES_REF:-}" "${AI_HARNESSES_MCP:-}"
+printf '  AI_HARNESSES_REF=%s\n  AI_HARNESSES_MCP=%s\n  PI_VERSION=%s\n' \
+  "${AI_HARNESSES_REF:-}" "${AI_HARNESSES_MCP:-}" "${PI_VERSION:-}"
 echo "[up] current remote UI selection:"
 printf '  OPENCODE_WEB_ENABLE=%s\n  OPENCODE_WEB_BIND_ADDR=%s\n  OPENCODE_WEB_PORT=%s\n  PASEO_ENABLE=%s\n' \
   "${OPENCODE_WEB_ENABLE:-}" "${OPENCODE_WEB_BIND_ADDR:-${PASEO_BIND_ADDR:-127.0.0.1}}" "${OPENCODE_WEB_PORT:-}" "${PASEO_ENABLE:-}"

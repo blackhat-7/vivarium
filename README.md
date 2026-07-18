@@ -24,14 +24,17 @@ Inside the container:
 
 ```bash
 opencode auth login        # default agent
+pi                         # use /login once for Pi provider auth
 cd ~/work
 git clone https://github.com/YOU/repo.git
 # or, with the same read-only token:
 gh repo clone YOU/repo
 ```
 
-AI harness configs are baked in yolo mode. MCPs are off by default; enable only
-what you need in `.env` before `./scripts/up.sh`:
+AI harness configs are baked in yolo mode. Pi and its declared packages run
+from the immutable image; provider auth, sessions, Hermes memory, and the rest
+of the home remain in the persistent `VIVARIUM_HOME` mount. MCPs are off by
+default; enable only what you need in `.env` before `./scripts/up.sh`:
 
 ```env
 # for private repo clones; scripts/up.sh / scripts/git-auth.sh load this into
@@ -67,7 +70,7 @@ Do not weaken these:
 
 ```bash
 ./scripts/up.sh [profile|env-file]              # create env, build image, start container
-./scripts/rebuild.sh [profile|env-file]         # refresh moving refs, rebuild image, recreate container
+./scripts/rebuild.sh [profile|env-file]         # refresh refs/Pi, rebuild image, recreate container
 ./scripts/rebuild.sh --no-cache [profile]       # fresh image rebuild; preserves vivarium home
 ./scripts/shell.sh [profile|env-file]           # enter container
 ./scripts/git-auth.sh [profile|env-file]        # re-prime GitHub HTTPS clone credential

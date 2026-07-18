@@ -73,35 +73,11 @@ if [[ "$INSTALL_OPENCODE" != true && "$INSTALL_CLAUDE" != true ]]; then
   exit 1
 fi
 
-resolve_ref_for_build() {
-  local env_key="$1" repo="$2" label="$3" ref sha
-  ref="${!env_key:-}"
-  [[ -n "$ref" ]] || return 0
-
-  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
-    echo "[rebuild] $label pinned to ${ref:0:12}"
-    return 0
-  fi
-
-  sha="$(git ls-remote "$repo" "refs/heads/$ref" 2>/dev/null | awk 'NF {print $1; exit}')"
-  [[ -n "$sha" ]] || sha="$(git ls-remote "$repo" "refs/tags/$ref^{}" 2>/dev/null | awk 'NF {print $1; exit}')"
-  [[ -n "$sha" ]] || sha="$(git ls-remote "$repo" "refs/tags/$ref" 2>/dev/null | awk 'NF {print $1; exit}')"
-  [[ -n "$sha" ]] || sha="$(git ls-remote "$repo" "$ref" 2>/dev/null | awk 'NF {print $1; exit}')"
-
-  if [[ -z "$sha" ]]; then
-    echo "[FATAL] could not resolve $label ref '$ref' from $repo" >&2
-    echo "[FATAL] check network access or pin $env_key to a full commit SHA in $VIVARIUM_ENV_FILE" >&2
-    exit 1
-  fi
-
-  echo "[rebuild] $label $ref -> ${sha:0:12}"
-  export "$env_key=$sha"
-}
-
 if [[ "$INSTALL_BESTIARY" == true ]]; then
-  resolve_ref_for_build BESTIARY_REF https://github.com/blackhat-7/bestiary.git bestiary
+  resolve_build_ref BESTIARY_REF https://github.com/blackhat-7/bestiary.git bestiary
 fi
-resolve_ref_for_build AI_HARNESSES_REF https://github.com/blackhat-7/ai-harnesses.git ai-harnesses
+resolve_build_ref AI_HARNESSES_REF https://github.com/blackhat-7/ai-harnesses.git ai-harnesses
+resolve_latest_release PI_VERSION https://github.com/earendil-works/pi.git Pi
 
 echo "[rebuild] profile: $VIVARIUM_PROFILE ($VIVARIUM_ENV_FILE)"
 echo "[rebuild] preserving bind mount: $VIVARIUM_HOME"

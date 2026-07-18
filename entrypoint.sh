@@ -17,7 +17,8 @@ fi
 # Idempotent: no-op if the line is already in safe form or absent.
 sed -i 's|^export PATH="\$HOME/\.local/bin:\$PATH"$|export PATH="$PATH:$HOME/.local/bin"|' "$HOME/.bashrc" 2>/dev/null || true
 grep -q '\.npm-global/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$PATH:$HOME/.npm-global/bin"' >> "$HOME/.bashrc"
-export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin"
+AI_HARNESSES_HOME=/opt/vivarium/ai-harnesses-home
+export PATH="$AI_HARNESSES_HOME/.npm-global/bin:$PATH:$HOME/.local/bin:$HOME/.npm-global/bin"
 export PI_OFFLINE="${PI_OFFLINE:-1}"
 
 # Always re-apply safety-critical git config. A compromised agent can
@@ -54,14 +55,17 @@ fi
 # intentionally overwritten on every start so an agent cannot persistently
 # enable MCPs or weaken/alter harness permissions by editing its home dir.
 apply_ai_harnesses() {
-  local src=/opt/vivarium/ai-harnesses-home rel
-  [ -d "$src" ] || return 0
+  local src="$AI_HARNESSES_HOME" rel
+  [ -x "$src/.npm-global/bin/pi" ] || {
+    echo "[FATAL] baked Pi runtime is missing; rebuild the Vivarium image." >&2
+    exit 1
+  }
 
   while IFS= read -r rel; do
     [ -e "$src/$rel" ] || continue
     mkdir -p "$(dirname "$HOME/$rel")"
     rm -rf "$HOME/$rel"
-    cp -P "$src/$rel" "$HOME/$rel"
+    cp -RP "$src/$rel" "$HOME/$rel"
   done <<'EOF'
 .claude/settings.json
 .claude/statusline-command.sh
@@ -73,6 +77,7 @@ apply_ai_harnesses() {
 .config/opencode/agent/reviewer.md
 .pi/agent/settings.json
 .pi/agent/readonly-bash.json
+.pi/agent/extensions/chutes-provider.ts
 .pi/agent/extensions/pi-permission-system/config.json
 .pi/agent/subagents.json
 .pi/agent/keybindings.json
@@ -81,9 +86,37 @@ apply_ai_harnesses() {
 .config/mcp/mcp.catalog.json
 EOF
 
-  if [ ! -x "$HOME/.npm-global/bin/pi" ] && [ -d "$src/.npm-global" ]; then
-    mkdir -p "$HOME/.npm-global"
-    cp -RP "$src/.npm-global/." "$HOME/.npm-global/"
+  # Package code is immutable image content. Mutable Pi state such as auth,
+  # sessions, trust, MCP OAuth, and Hermes memory stays in the mounted home.
+  for rel in .pi/agent/npm .pi/agent/git; do
+    [ -d "$src/$rel" ] || {
+      echo "[FATAL] baked Pi package tree is missing: $rel" >&2
+      exit 1
+    }
+    mkdir -p "$(dirname "$HOME/$rel")"
+    rm -rf "$HOME/$rel"
+    ln -s "$src/$rel" "$HOME/$rel"
+  done
+
+  if grep -Fq '"npm:pi-hermes-memory"' "$src/.pi/agent/settings.json"; then
+    local hermes="$src/.pi/agent/npm/node_modules/pi-hermes-memory"
+    [ -r "$hermes/package.json" ] || {
+      echo "[FATAL] ai-harnesses declares pi-hermes-memory, but it is not installed." >&2
+      exit 1
+    }
+    if ! node - "$hermes" <<'NODE'
+const path = require("node:path");
+const { createRequire } = require("node:module");
+const root = process.argv[2];
+const requireFromHermes = createRequire(path.join(root, "package.json"));
+const Database = requireFromHermes("better-sqlite3");
+const database = new Database(":memory:");
+database.close();
+NODE
+    then
+      echo "[FATAL] pi-hermes-memory is incompatible with the runtime Node.js." >&2
+      exit 1
+    fi
   fi
 }
 apply_ai_harnesses

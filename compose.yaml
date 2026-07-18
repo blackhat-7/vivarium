@@ -12,6 +12,7 @@ services:
         BESTIARY_REF: "${BESTIARY_REF:-main}"
         AI_HARNESSES_REF: "${AI_HARNESSES_REF:-main}"
         AI_HARNESSES_MCP: "${AI_HARNESSES_MCP:-none}"
+        PI_VERSION: "${PI_VERSION:-latest}"
     image: vivarium:latest
     container_name: "${CONTAINER_NAME:-vivarium}"
 
@@ -24,6 +25,7 @@ services:
     # Remote UI modes. OpenCode web is enabled by default on :4096.
     # Paseo is optional on :6767 and can run alongside it.
     environment:
+      PI_OFFLINE: "1"
       OPENCODE_WEB_ENABLE: "${OPENCODE_WEB_ENABLE:-true}"
       OPENCODE_SERVER_USERNAME: "opencode"
       PASEO_ENABLE: "${PASEO_ENABLE:-}"

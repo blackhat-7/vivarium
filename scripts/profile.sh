@@ -53,3 +53,46 @@ export VIVARIUM_BACKUP="${VIVARIUM_BACKUP:-$default_backup}"
 vivarium_compose() {
   docker compose --env-file "$VIVARIUM_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"
 }
+
+resolve_build_ref() {
+  local env_key="$1" repo="$2" label="$3" ref sha
+  ref="${!env_key:-}"
+  [[ -n "$ref" ]] || return 0
+
+  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "[build] $label pinned to ${ref:0:12}"
+    return 0
+  fi
+
+  sha="$(git ls-remote "$repo" "refs/heads/$ref" 2>/dev/null | awk 'NF {print $1; exit}')"
+  [[ -n "$sha" ]] || sha="$(git ls-remote "$repo" "refs/tags/$ref^{}" 2>/dev/null | awk 'NF {print $1; exit}')"
+  [[ -n "$sha" ]] || sha="$(git ls-remote "$repo" "refs/tags/$ref" 2>/dev/null | awk 'NF {print $1; exit}')"
+  [[ -n "$sha" ]] || sha="$(git ls-remote "$repo" "$ref" 2>/dev/null | awk 'NF {print $1; exit}')"
+
+  if [[ -z "$sha" ]]; then
+    echo "[FATAL] could not resolve $label ref '$ref' from $repo" >&2
+    echo "[FATAL] check network access or pin $env_key to a full commit SHA in $VIVARIUM_ENV_FILE" >&2
+    exit 1
+  fi
+
+  echo "[build] $label $ref -> ${sha:0:12}"
+  export "$env_key=$sha"
+}
+
+resolve_latest_release() {
+  local env_key="$1" repo="$2" label="$3" version
+  version="$(
+    git ls-remote --tags --refs "$repo" 'refs/tags/v*' 2>/dev/null \
+      | awk -F/ '$3 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ {sub(/^v/, "", $3); print $3}' \
+      | sort -V \
+      | tail -1
+  )"
+  if [[ -z "$version" ]]; then
+    echo "[FATAL] could not resolve the latest $label release from $repo" >&2
+    echo "[FATAL] check network access to resolve the release used for this build" >&2
+    exit 1
+  fi
+
+  echo "[build] $label latest -> $version"
+  export "$env_key=$version"
+}
