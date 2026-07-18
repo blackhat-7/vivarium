@@ -17,6 +17,7 @@ Containers can submit and poll over a read-only-mounted Unix socket, but cannot
 approve or access host credentials. The broker imports a self-contained bundle
 into a temporary bare repository and permits only one exact create or
 fast-forward branch push. Pending requests do not expire; quotas bound storage.
+The feature is disabled by default.
 
 - Docker image: `vivarium:latest`
 - default container name: `vivarium`; named profiles use `vivarium-<profile>`
