@@ -1,11 +1,13 @@
 import base64
 import importlib.util
+import re
 import subprocess
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -119,14 +121,19 @@ class PushGateTests(unittest.TestCase):
                 urllib.request.urlopen(base + f"/r/{request_id}")
             self.assertEqual(denied.exception.code, 401)
 
-            wrong_origin = urllib.request.Request(base + f"/r/{request_id}/approve", method="POST", headers={"Authorization": auth, "Origin": "http://evil.invalid"})
+            page = urllib.request.Request(base + f"/r/{request_id}", headers={"Authorization": auth})
+            markup = urllib.request.urlopen(page).read().decode()
+            csrf = re.search(r'name="csrf" value="([^"]+)"', markup).group(1)
+            form = urlencode({"csrf": csrf}).encode()
+
+            wrong_origin = urllib.request.Request(base + f"/r/{request_id}/approve", data=form, method="POST", headers={"Authorization": auth, "Origin": "http://evil.invalid"})
             with self.assertRaises(urllib.error.HTTPError) as forbidden:
                 urllib.request.urlopen(wrong_origin)
             self.assertEqual(forbidden.exception.code, 403)
             self.assertEqual(self.gate.load(request_id)["state"], "pending")
 
             self.gate.origin = base
-            approved = urllib.request.Request(base + f"/r/{request_id}/approve", method="POST", headers={"Authorization": auth, "Origin": base})
+            approved = urllib.request.Request(base + f"/r/{request_id}/approve", data=form, method="POST", headers={"Authorization": auth, "Origin": base})
             opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
             response = opener.open(approved)
             self.assertEqual(response.status, 200)

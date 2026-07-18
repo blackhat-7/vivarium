@@ -11,7 +11,7 @@ INSTALL_DIR="$HOME/.local/lib/vivarium"
 BROKER="$INSTALL_DIR/push-gate-broker.py"
 PID_FILE="$STATE_DIR/broker.pid"
 LOG_FILE="$STATE_DIR/broker.log"
-AUTH_FILE="$STATE_DIR/ssh-auth-sock"
+RUNTIME_FILE="$STATE_DIR/runtime-config"
 
 die() { echo "[FATAL] $* Disable with: ./scripts/push-gate.sh disable" >&2; exit 1; }
 random_password() { od -An -N24 -tx1 /dev/urandom | tr -d ' \n'; }
@@ -79,9 +79,10 @@ start() {
   command -v ssh >/dev/null || die "ssh is required."
   [[ -x "$BROKER" ]] || die "broker is not installed; rerun: $0 enable"
   install -d -m 0700 "$STATE_DIR" "$SOCKET_DIR"
-  local previous=""
-  [[ -f "$AUTH_FILE" ]] && read -r previous <"$AUTH_FILE" || true
-  if running && [[ -S "$SOCKET_DIR/request.sock" && "$previous" == "${SSH_AUTH_SOCK:-}" ]]; then
+  local previous="" desired
+  desired="${SSH_AUTH_SOCK:-}|$PUSH_GATE_APPROVAL_BIND_ADDR|$PUSH_GATE_PUBLIC_URL"
+  [[ -f "$RUNTIME_FILE" ]] && read -r previous <"$RUNTIME_FILE" || true
+  if running && [[ -S "$SOCKET_DIR/request.sock" && "$previous" == "$desired" ]]; then
     echo "[push-gate] running at $PUSH_GATE_PUBLIC_URL"
     return 0
   fi
@@ -94,7 +95,7 @@ start() {
     >>"$LOG_FILE" 2>&1 </dev/null &
   BROKER_PID=$!
   printf '%s\n' "$BROKER_PID" >"$PID_FILE"; chmod 0600 "$PID_FILE"
-  printf '%s\n' "${SSH_AUTH_SOCK:-}" >"$AUTH_FILE"; chmod 0600 "$AUTH_FILE"
+  printf '%s\n' "$desired" >"$RUNTIME_FILE"; chmod 0600 "$RUNTIME_FILE"
   for _ in {1..50}; do
     [[ -S "$SOCKET_DIR/request.sock" ]] && { echo "[push-gate] running at $PUSH_GATE_PUBLIC_URL"; return 0; }
     kill -0 "$BROKER_PID" 2>/dev/null || break

@@ -19,7 +19,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 ZERO = "0" * 40
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -82,6 +82,7 @@ class Gate:
             raise ValueError("public URL must be an HTTP(S) origin")
         self.origin = f"{parsed.scheme}://{parsed.netloc}"
         self.password = password
+        self.csrf_token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
         self.active: set[str] = set()
         for directory in (state_dir, self.requests_dir, self.quarantine_dir, socket_path.parent):
@@ -371,7 +372,17 @@ class BrowserHandler(BaseHTTPRequestHandler):
         self.page(match.group(1), meta)
 
     def do_POST(self):
-        if not self.require_auth() or self.headers.get("Origin") != self.gate.origin:
+        if not self.require_auth():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        form = parse_qs(self.rfile.read(length).decode()) if 0 < length <= 4096 else {}
+        token = form.get("csrf", [""])[0]
+        origin = self.headers.get("Origin")
+        host_origin = f"{urlsplit(self.gate.public_url).scheme}://{self.headers.get('Host', '')}"
+        if not hmac.compare_digest(token, self.gate.csrf_token) or (origin and origin not in (self.gate.origin, host_origin)):
             self.send_error(403)
             return
         match = re.fullmatch(r"/r/([0-9a-f]{32})/(approve|deny)", self.path)
@@ -407,7 +418,8 @@ class BrowserHandler(BaseHTTPRequestHandler):
         ))
         actions = ""
         if meta["state"] == "pending":
-            actions = f'<div class="actions"><form method="post" action="/r/{request_id}/approve"><button class="approve">Approve once</button></form><form method="post" action="/r/{request_id}/deny"><button class="deny">Deny</button></form></div>'
+            csrf = html.escape(self.gate.csrf_token)
+            actions = f'<div class="actions"><form method="post" action="/r/{request_id}/approve"><input type="hidden" name="csrf" value="{csrf}"><button class="approve">Approve once</button></form><form method="post" action="/r/{request_id}/deny"><input type="hidden" name="csrf" value="{csrf}"><button class="deny">Deny</button></form></div>'
         elif meta["message"]:
             actions = f'<p class="message">{html.escape(meta["message"])}</p>'
         body = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Push approval</title><style>
