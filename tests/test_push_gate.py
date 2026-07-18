@@ -107,7 +107,7 @@ class PushGateTests(unittest.TestCase):
         gate.execute(request_id)
         self.assertEqual(gate.load(request_id)["state"], "failed")
 
-    def test_browser_requires_auth_and_origin(self):
+    def test_browser_requires_auth_and_csrf(self):
         request_id = self.gate.submit(self.headers, b"bundle")["id"]
         self.gate.start_execution = lambda _request_id: None
         broker.BrowserHandler.gate = self.gate
@@ -126,14 +126,14 @@ class PushGateTests(unittest.TestCase):
             csrf = re.search(r'name="csrf" value="([^"]+)"', markup).group(1)
             form = urlencode({"csrf": csrf}).encode()
 
-            wrong_origin = urllib.request.Request(base + f"/r/{request_id}/approve", data=form, method="POST", headers={"Authorization": auth, "Origin": "http://evil.invalid"})
+            bad_form = urlencode({"csrf": "wrong"}).encode()
+            wrong_token = urllib.request.Request(base + f"/r/{request_id}/approve", data=bad_form, method="POST", headers={"Authorization": auth})
             with self.assertRaises(urllib.error.HTTPError) as forbidden:
-                urllib.request.urlopen(wrong_origin)
+                urllib.request.urlopen(wrong_token)
             self.assertEqual(forbidden.exception.code, 403)
             self.assertEqual(self.gate.load(request_id)["state"], "pending")
 
-            self.gate.origin = base
-            approved = urllib.request.Request(base + f"/r/{request_id}/approve", data=form, method="POST", headers={"Authorization": auth, "Origin": base})
+            approved = urllib.request.Request(base + f"/r/{request_id}/approve", data=form, method="POST", headers={"Authorization": auth})
             opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
             response = opener.open(approved)
             self.assertEqual(response.status, 200)

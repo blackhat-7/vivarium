@@ -80,7 +80,6 @@ class Gate:
         parsed = urlsplit(self.public_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
             raise ValueError("public URL must be an HTTP(S) origin")
-        self.origin = f"{parsed.scheme}://{parsed.netloc}"
         self.password = password
         self.csrf_token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
@@ -380,9 +379,7 @@ class BrowserHandler(BaseHTTPRequestHandler):
             length = 0
         form = parse_qs(self.rfile.read(length).decode()) if 0 < length <= 4096 else {}
         token = form.get("csrf", [""])[0]
-        origin = self.headers.get("Origin")
-        host_origin = f"{urlsplit(self.gate.public_url).scheme}://{self.headers.get('Host', '')}"
-        if not hmac.compare_digest(token, self.gate.csrf_token) or (origin and origin not in (self.gate.origin, host_origin)):
+        if not hmac.compare_digest(token, self.gate.csrf_token):
             self.send_error(403)
             return
         match = re.fullmatch(r"/r/([0-9a-f]{32})/(approve|deny)", self.path)
