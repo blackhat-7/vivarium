@@ -37,7 +37,12 @@ Fixed MVP limits:
 - 16 KiB maximum `request.json`, including an 8 KiB frozen action;
 - 300-byte result, 20 description fields, 64-byte labels, 512-byte values, and a
   32 KiB rendered approval page;
-- 120-second absolute upload deadline.
+- 120-second absolute upload deadline;
+- approval port `7843`;
+- host configuration keys `EXTERNAL_GATE_ENABLE`,
+  `EXTERNAL_GATE_APPROVAL_PASSWORD`, `EXTERNAL_GATE_APPROVAL_MODE`,
+  `EXTERNAL_GATE_APPROVAL_BIND_ADDR`, `EXTERNAL_GATE_PUBLIC_URL`, and
+  `EXTERNAL_GATE_SSH_KEY_FINGERPRINT`.
 
 ## Architecture
 
@@ -333,7 +338,8 @@ Rules:
 
 - The 24-hour limit is a decision deadline, not a total request lifetime.
 - Under the state lock, approval checks the deadline and performs exactly one
-  `Pending → Approved` transition; an expired request becomes `Expired` instead.
+  `Pending → Approved` transition; `now >= decision_deadline` becomes `Expired`
+  instead.
 - Worker claim atomically performs `Approved → Executing` with no second deadline
   check. Once approved in time, the request remains eligible for its one attempt.
 - Persist `Approved` before waking the worker and `Executing` before the external
@@ -355,7 +361,10 @@ Rules:
 Preserve these restrictions:
 
 - GitHub only.
-- Canonical ASCII owner, repository, and `refs/heads/*` branch.
+- Canonical ASCII owner, repository, and `refs/heads/*` branch using the strict
+  intersection of the existing client/server rules: owner starts and ends
+  alphanumeric, repository starts alphanumeric and does not end in `.git`, and
+  the branch passes both the existing denylist and `git check-ref-format`.
 - One branch creation or fast-forward update.
 - No deletes, tags, force updates, arbitrary refspecs, hooks, or Git LFS.
 - Exactly one bundle `HEAD` at the approved commit.
@@ -518,6 +527,7 @@ Modify:
 ```text
 scripts/vpush
 scripts/profile.sh
+scripts/profile-create.sh
 scripts/up.sh
 scripts/rebuild.sh
 scripts/remove.sh

@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 # Submit the current branch for one host-approved GitHub push.
 set -euo pipefail
+export LC_ALL=C
 
-SOCKET=${VIVARIUM_PUSH_GATE_SOCKET:-/run/vivarium-push-gate/request.sock}
+SOCKET=${VIVARIUM_EXTERNAL_GATE_SOCKET:-/run/vivarium-external-gate/request.sock}
 MAX_BUNDLE_BYTES=$((100 * 1024 * 1024))
 ZERO_OID=0000000000000000000000000000000000000000
 fatal() { echo "vpush: $*" >&2; exit 1; }
 
+valid_ref() {
+  local ref=$1 name component
+  [[ "$ref" == refs/heads/* && ${#ref} -le 250 ]] || return 1
+  name=${ref#refs/heads/}
+  [[ "$name" =~ ^[[:print:]]+$ ]] || return 1
+  [[ -n "$name" && "$name" != @ && "$name" != .* && "$name" != -* && "$name" != */ && "$name" != *. ]] || return 1
+  [[ "$name" != *..* && "$name" != *//* && "$name" != *@\{* ]] || return 1
+  [[ "$name" != *[' ~^:?*[\']* ]] || return 1
+  IFS=/ read -r -a components <<<"$name"
+  for component in "${components[@]}"; do
+    [[ -n "$component" && "$component" != .* && "$component" != *.lock ]] || return 1
+  done
+  /usr/bin/git check-ref-format --branch "$name" >/dev/null 2>&1
+}
+
 [[ $# -eq 0 ]] || fatal "usage: vpush"
-[[ -S "$SOCKET" ]] || fatal "push gate is unavailable; ask the host user to run scripts/push-gate.sh start"
+[[ -S "$SOCKET" ]] || fatal "external gate is unavailable; ask the host user to run scripts/external-gate.sh start"
 root=$(/usr/bin/git rev-parse --show-toplevel 2>/dev/null) || fatal "not inside a Git repository"
 branch=$(/usr/bin/git -C "$root" symbolic-ref --quiet --short HEAD) || fatal "detached HEAD is not supported"
-/usr/bin/git check-ref-format --branch "$branch" >/dev/null || fatal "invalid branch"
 ref="refs/heads/$branch"
+valid_ref "$ref" || fatal "invalid branch"
 new_oid=$(/usr/bin/git -C "$root" rev-parse --verify 'HEAD^{commit}') || fatal "HEAD is not a commit"
 
 origin=$(/usr/bin/git -C "$root" remote get-url origin) || fatal "origin is not configured"
@@ -22,9 +38,14 @@ case "$origin" in
 esac
 path=${path%.git}
 [[ "$path" == */* && "$path" != */*/* ]] || fatal "origin must name one GitHub owner and repository"
-owner=${path%%/*}; repo=${path#*/}
-[[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || fatal "unsupported GitHub owner"
-[[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || fatal "unsupported GitHub repository"
+owner=${path%%/*}
+repo=${path#*/}
+[[ "$owner" =~ ^[A-Za-z0-9]$ || "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,37}[A-Za-z0-9]$ ]] \
+  || fatal "unsupported GitHub owner"
+[[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ && "$repo" != *.git ]] \
+  || fatal "unsupported GitHub repository"
+profile=${VIVARIUM_PROFILE:-default}
+[[ "$profile" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || fatal "invalid Vivarium profile label"
 canonical="https://github.com/$owner/$repo.git"
 
 line=$(GIT_TERMINAL_PROMPT=0 /usr/bin/git -C "$root" \
@@ -41,16 +62,19 @@ fi
 umask 077
 bundle=$(mktemp "${TMPDIR:-/tmp}/vpush.XXXXXX.bundle")
 trap 'rm -f "$bundle"' EXIT
-/usr/bin/git -C "$root" -c core.hooksPath=/dev/null bundle create "$bundle" HEAD >/dev/null 
+/usr/bin/git -C "$root" -c core.hooksPath=/dev/null bundle create "$bundle" HEAD >/dev/null
 size=$(stat -c '%s' "$bundle")
-(( size <= MAX_BUNDLE_BYTES )) || fatal "bundle exceeds the 100 MiB MVP limit"
+(( size <= MAX_BUNDLE_BYTES )) || fatal "bundle exceeds the 100 MiB limit"
 
 response=$(/usr/bin/curl --silent --show-error --fail-with-body --unix-socket "$SOCKET" \
   --connect-timeout 3 --max-time 120 -X POST -H 'Content-Type: application/x-git-bundle' \
-  -H "X-Vivarium-Profile: ${VIVARIUM_PROFILE:-default}" \
+  -H "X-Vivarium-Profile: $profile" \
   -H "X-Vivarium-Owner: $owner" -H "X-Vivarium-Repo: $repo" -H "X-Vivarium-Ref: $ref" \
   -H "X-Vivarium-Old-Oid: $old_oid" -H "X-Vivarium-New-Oid: $new_oid" \
-  --data-binary "@$bundle" http://localhost/requests) || fatal "request submission failed"
-printf '%s' "$response" | /usr/bin/jq -e '.id | select(test("^[0-9a-f]{32}$"))' >/dev/null || fatal "invalid broker response"
-approval_url=$(printf '%s' "$response" | /usr/bin/jq -er '.approval_url | select(type == "string")') || fatal "invalid broker response"
-printf '[push-gate] request submitted; no push has happened yet.\n[push-gate] approve or deny: %s\n' "$approval_url"
+  --data-binary "@$bundle" http://localhost/v1/requests/git.push-branch.v1) \
+  || fatal "request submission failed"
+printf '%s' "$response" | /usr/bin/jq -e '.id | select(test("^[0-9a-f]{32}$"))' >/dev/null \
+  || fatal "invalid external-gate response"
+approval_url=$(printf '%s' "$response" | /usr/bin/jq -er '.approval_url | select(type == "string")') \
+  || fatal "invalid external-gate response"
+printf '[external-gate] request submitted; no push has happened yet.\n[external-gate] approve or deny: %s\n' "$approval_url"

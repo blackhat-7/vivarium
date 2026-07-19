@@ -1,0 +1,25 @@
+FROM python:3.13-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
+
+ARG UID=1000
+ARG GID=1000
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid "$GID" vivarium \
+    && useradd --uid "$UID" --gid "$GID" --create-home --shell /usr/sbin/nologin vivarium \
+    && install -d -o vivarium -g vivarium -m 0700 \
+        /var/lib/vivarium-external-gate \
+        /var/tmp/vivarium-external-gate \
+        /run/vivarium-external-gate \
+        /run/vivarium-external-gate-config \
+        /run/vivarium-external-gate-ssh
+
+WORKDIR /opt/vivarium
+COPY --chown=vivarium:vivarium external_gate/ /opt/vivarium/external_gate/
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+USER vivarium
+ENTRYPOINT ["python", "-m", "external_gate"]

@@ -63,12 +63,22 @@ echo "  - remove vivarium cron entries"
 echo "  - remove vivarium tailnet forwarder systemd unit"
 $REMOVE_DATA    && echo "  - DELETE $VIVARIUM_HOME (your work dir + agent auth)"
 $REMOVE_BACKUPS && echo "  - DELETE $VIVARIUM_BACKUP (snapshot history + log files)"
-$REMOVE_REPO    && echo "  - DELETE $VIVARIUM_DIR (the vivarium repo itself)"
+if $REMOVE_REPO; then
+  echo "  - stop + remove the shared external-gate container"
+  echo "  - preserve external-gate state and configuration"
+  echo "  - DELETE $VIVARIUM_DIR (the vivarium repo itself)"
+fi
 echo ""
 
 if ! $SKIP_PROMPT && ! $DRY_RUN; then
   read -p "proceed? [y/N] " reply
   case "$reply" in [yY]|[yY][eE][sS]) ;; *) echo "aborted."; exit 0 ;; esac
+fi
+
+# The shared gate is removed only with the whole Vivarium installation. Its
+# host configuration and request state are deliberately preserved.
+if $REMOVE_REPO && [[ -x "$VIVARIUM_DIR/scripts/external-gate.sh" ]]; then
+  yep "bash '$VIVARIUM_DIR/scripts/external-gate.sh' stop"
 fi
 
 # container
@@ -130,4 +140,6 @@ fi
 
 echo ""
 echo "[remove] done."
-$DRY_RUN && echo "(dry run — nothing was actually changed)"
+if $DRY_RUN; then
+  echo "(dry run — nothing was actually changed)"
+fi

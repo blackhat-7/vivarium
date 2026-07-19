@@ -1,0 +1,13 @@
+# Applied only when the shared external gate is enabled.
+services:
+  vivarium:
+    environment:
+      VIVARIUM_PROFILE: "${VIVARIUM_PROFILE:-default}"
+      VIVARIUM_EXTERNAL_GATE_SOCKET: /run/vivarium-external-gate/request.sock
+    volumes:
+      - type: bind
+        source: "${EXTERNAL_GATE_SOCKET_DIR:?external-gate socket directory is required}"
+        target: /run/vivarium-external-gate
+        read_only: true
+        bind:
+          create_host_path: false

@@ -7,17 +7,20 @@ point and safety contract.
 
 ```mermaid
 flowchart LR
-  agent[Agent runs vpush] -->|bundle + exact ref| broker[Host push gate]
-  user[User] -->|approve or deny| broker
-  broker -->|existing host SSH auth| github[GitHub]
+  agent[Agent runs vpush] -->|typed request socket| gate[External gate container]
+  user[User] -->|authenticated approval| gate
+  gate -->|dedicated one-key SSH agent| github[GitHub]
 ```
 
-The optional push gate is one host Python process shared by all profiles.
-Containers can submit and poll over a read-only-mounted Unix socket, but cannot
-approve or access host credentials. The broker imports a self-contained bundle
-into a temporary bare repository and permits only one exact create or
-fast-forward branch push. Pending requests do not expire; quotas bound storage.
-The feature is disabled by default. Each approval applies to one request, and denial performs no write.
+The optional external gate is one standalone hardened container shared by all
+profiles. Profiles receive only its Unix request socket and cannot reach gate
+state, its SSH agent, or its container network. Agents may still route to a
+host-published approval address, so Basic authentication and CSRF checks remain
+mandatory. The only production route is
+`git.push-branch.v1`. A bounded durable file store, one worker, and explicit
+`Executing`/`Uncertain` reconciliation prevent automatic write retries. Pending
+approval expires after 24 hours; unresolved uncertainty is abandoned after a
+further 24 hours. The gate is disabled by default.
 
 - Docker image: `vivarium:latest`
 - default container name: `vivarium`; named profiles use `vivarium-<profile>`
@@ -29,7 +32,7 @@ The feature is disabled by default. Each approval applies to one request, and de
 
 ## Runtime hardening
 
-From `compose.yaml`:
+From `compose.yaml` for each profile:
 
 - `cap_drop: [ALL]`
 - `cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]`
@@ -39,6 +42,10 @@ From `compose.yaml`:
 - `pids_limit: 512`
 - no Docker socket mount
 - no privileged mode
+
+The standalone gate additionally has no added capabilities, a read-only root,
+a 1 GiB scratch tmpfs, 1 CPU, 2 GiB memory, 128 PIDs, bounded logs, and only
+state/socket/config/dedicated-agent mounts. It never joins profile networks.
 
 ## Image contents
 
@@ -82,8 +89,12 @@ its own cached layer before the ai-harnesses profile build.
   `VIVARIUM_HOME`, and supports `--no-cache`/`--fresh` for a full image rebuild.
 - `scripts/git-auth.sh` re-primes a running container's GitHub HTTPS clone/`gh`
   credential from `GITHUB_READ_TOKEN` without writing `~/.git-credentials`.
-- `scripts/push-gate.sh` optionally installs and runs a host-user approval broker;
+- `scripts/external-gate.sh` serializes lifecycle operations for the shared gate;
   `vpush` submits the current branch without exposing host SSH credentials.
+- Enabled profiles add only `compose.external-gate-client.yaml`; `up.sh` and
+  `rebuild.sh` fail closed if gate startup validation fails.
+- `remove.sh --everything` removes the gate container but preserves its host
+  configuration and request state.
 - `scripts/shell.sh` starts the selected profile if needed, re-primes GitHub
   HTTPS clone credentials for already-running containers when
   `GITHUB_READ_TOKEN` is set, and opens bash.

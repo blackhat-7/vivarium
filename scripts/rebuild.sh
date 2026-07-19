@@ -39,6 +39,11 @@ github_read_token="${GITHUB_READ_TOKEN:-}"
 export -n GITHUB_READ_TOKEN 2>/dev/null || true
 unset GITHUB_READ_TOKEN
 
+# Revalidate/recreate the shared external gate before replacing the profile.
+if $EXTERNAL_GATE_HOST_ENABLED; then
+  ./scripts/external-gate.sh start
+fi
+
 export HOST_UID="$(id -u)"
 export HOST_GID="$(id -g)"
 export INSTALL_OPENCODE="${INSTALL_OPENCODE:-true}"
