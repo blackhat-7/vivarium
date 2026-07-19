@@ -36,12 +36,12 @@ If a request requires weakening a red line, stop and say so.
   idempotent and only touch vivarium-owned entries.
 - Never delete user data without an explicit destructive flag.
 - Keep docs short and implementation-accurate.
-- If behavior changes, update `README.md` or `DOCS.md` as needed.
+- If behavior changes, update `README.md` or `docs/implementation.md` as needed.
 
 ## File index
 
 - `README.md` — quick start, safety rules, commands, roadmap checklist
-- `DOCS.md` — concise implementation notes
+- `docs/implementation.md` — concise implementation notes
 - `Dockerfile` — image and optional installs
 - `compose.yaml` — runtime hardening and mounts
 - `entrypoint.sh` — container startup config

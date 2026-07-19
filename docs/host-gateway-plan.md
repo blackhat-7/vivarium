@@ -534,7 +534,7 @@ scripts/remove.sh
 .dockerignore
 .env.example
 README.md
-DOCS.md
+docs/implementation.md
 ```
 
 Remove:

@@ -126,7 +126,8 @@ For parallel Paseo profiles, set different `PASEO_PORT` values.
 - `scripts/build-ai-harnesses.sh` — build-time yolo ai-harnesses profile
 - `.env.example` — default config template
 - `profiles/*.env` — ignored per-profile config files
-- `DOCS.md` — concise implementation notes
+- `docs/implementation.md` — concise implementation notes
+- `docs/host-gateway-plan.md` — external-gate design and verification contract
 
 ## Planned additions
 
