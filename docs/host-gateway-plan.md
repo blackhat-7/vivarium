@@ -201,8 +201,10 @@ container environment variables.
 
 Decision forms require CSRF protection. If `Origin` is present, it must match
 the configured public origin. Missing `Origin` remains valid for embedded
-browsers. Basic authentication is allowed only over loopback or encrypted
-transport.
+browsers. Approval responses use `Referrer-Policy: same-origin`: this prevents
+cross-origin referrer disclosure without causing normal browser form POSTs to
+send the opaque `Origin: null`. Basic authentication is allowed only over
+loopback or encrypted transport.
 
 The browser listener cannot submit or inspect artifacts. The Unix listener
 cannot approve, deny, retry, or perform administrative mutations. The browser

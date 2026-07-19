@@ -630,7 +630,9 @@ class ExternalGateTests(unittest.TestCase):
                 urllib.request.urlopen(base + f"/r/{request_id}")
             self.assertEqual(denied.exception.code, 401)
             page_request = urllib.request.Request(base + f"/r/{request_id}", headers={"Authorization": auth})
-            page = urllib.request.urlopen(page_request).read().decode()
+            page_response = urllib.request.urlopen(page_request)
+            self.assertEqual(page_response.headers["Referrer-Policy"], "same-origin")
+            page = page_response.read().decode()
             self.assertIn("Bundle SHA-256", page)
             form = urlencode({"csrf": self.gate.csrf_token}).encode()
             wrong_origin = urllib.request.Request(
@@ -646,6 +648,19 @@ class ExternalGateTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as forbidden:
                 urllib.request.urlopen(wrong_origin)
             self.assertEqual(forbidden.exception.code, 403)
+            null_origin = urllib.request.Request(
+                base + f"/r/{request_id}/approve",
+                data=form,
+                method="POST",
+                headers={
+                    "Authorization": auth,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "null",
+                },
+            )
+            with self.assertRaises(urllib.error.HTTPError) as opaque:
+                urllib.request.urlopen(null_origin)
+            self.assertEqual(opaque.exception.code, 403)
             approved = urllib.request.Request(
                 base + f"/r/{request_id}/approve",
                 data=form,
