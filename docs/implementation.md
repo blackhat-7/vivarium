@@ -20,7 +20,12 @@ mandatory. The only production route is
 `git.push-branch.v1`. A bounded durable file store, one worker, and explicit
 `Executing`/`Uncertain` reconciliation prevent automatic write retries. Pending
 approval expires after 24 hours; unresolved uncertainty is abandoned after a
-further 24 hours. The gate is disabled by default.
+further 24 hours. The generic approval page renders only bounded typed sections,
+auto-refreshes active execution states without JavaScript, and shows a locally
+validated, escaped unified-diff preview for Git pushes. A nonce-scoped poller
+reloads active pages only when their durable state changes. Gate startup fingerprints
+the exact built image so source-only rebuilds recreate a stale container. The
+gate is disabled by default.
 
 - Docker image: `vivarium:latest`
 - default container name: `vivarium`; named profiles use `vivarium-<profile>`

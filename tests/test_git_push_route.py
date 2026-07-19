@@ -15,6 +15,7 @@ from external_gate.git_push import (
     ProcessRunner,
     RouteFailure,
     ZERO_OID,
+    bounded_preview,
     valid_ref,
     validate_fields,
 )
@@ -88,6 +89,14 @@ class GitPushRouteTests(unittest.TestCase):
         )
         return result.stdout.strip() if result.returncode == 0 else ZERO_OID
 
+    def test_preview_neutralizes_bidirectional_controls(self):
+        preview, truncated = bounded_preview("safe\u202eevil\u2066text".encode(), 100)
+        self.assertFalse(truncated)
+        self.assertNotIn("\u202e", preview)
+        self.assertNotIn("\u2066", preview)
+        self.assertIn("\\u202E", preview)
+        self.assertIn("\\u2066", preview)
+
     def test_authoritative_validation(self):
         validate_fields("work", "owner-1", "repo.name", "refs/heads/feature/x", ZERO_OID, "1" * 40)
         invalid = [
@@ -105,12 +114,62 @@ class GitPushRouteTests(unittest.TestCase):
         self.assertTrue(valid_ref("refs/heads/release/one"))
         self.assertFalse(valid_ref("refs/heads/a..b"))
 
-    def test_freeze_declares_only_exact_action(self):
-        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, ZERO_OID, "1" * 40]))
-        frozen = self.route.freeze(headers, Path("unused"), "a" * 64, 10)
-        self.assertEqual(set(frozen), {"profile", "owner", "repo", "ref", "old_oid", "new_oid"})
-        self.assertEqual(self.route.decode(frozen).new_oid, "1" * 40)
-        self.assertEqual(self.route.describe(self.route.decode(frozen))[1], ("Repository", "example/repo"))
+    def test_freeze_declares_exact_action_with_bounded_diff_preview(self):
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, ZERO_OID, new_oid]))
+        frozen = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        self.assertEqual(
+            set(frozen),
+            {
+                "profile", "owner", "repo", "ref", "old_oid", "new_oid", "commit_count",
+                "commits", "diff_stat", "diff", "diff_truncated",
+            },
+        )
+        action = self.route.decode(frozen)
+        self.assertEqual(action.new_oid, new_oid)
+        self.assertEqual(action.commit_count, 1)
+        self.assertIn("+one", action.diff)
+        self.assertEqual(self.route.describe(action)[1], ("Repository", "example/repo"))
+        sections = self.route.approval_sections(action)
+        self.assertEqual([section.kind for section in sections], ["code", "diff"])
+
+    def test_decode_preserves_existing_v1_actions_without_a_preview(self):
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        frozen = dict(zip(
+            ("profile", "owner", "repo", "ref", "old_oid", "new_oid"),
+            ("work", "example", "repo", self.ref, ZERO_OID, new_oid),
+        ))
+        action = self.route.decode(frozen)
+        self.assertEqual(action.new_oid, new_oid)
+        self.assertEqual(action.commit_count, 0)
+        self.assertEqual(self.route.approval_sections(action), [])
+        self.assertNotIn("Change", [label for label, _value in self.route.describe(action)])
+
+    def test_diff_preview_is_bounded_and_marks_truncation(self):
+        old_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        new_oid = self.commit("x" * 6_000 + "\n")
+        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, old_oid, new_oid]))
+        frozen = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        self.assertTrue(frozen["diff_truncated"])
+        self.assertLessEqual(len(frozen["diff"].encode()), 2_400)
+        self.assertLessEqual(len(frozen["diff"].splitlines()), 120)
+
+    def test_freeze_rejects_non_fast_forward_history_before_approval(self):
+        old_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        subprocess.run(["git", "-C", str(self.source), "checkout", "-q", "--orphan", "other"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "rm", "-q", "-rf", "."], check=True)
+        new_oid = self.commit("other\n")
+        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, old_oid, new_oid]))
+        with self.assertRaises(ValueError):
+            self.route.freeze(headers, self.bundle(), "a" * 64, 10)
 
     def test_create_and_fast_forward(self):
         first = self.action()
@@ -205,6 +264,15 @@ class GitPushRouteTests(unittest.TestCase):
             result = self.route.execute(self.action(), self.bundle())
         self.assertEqual((result.state, result.code), ("failed", "scratch_full"))
         self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_preview_cleanup_cannot_delete_active_execution_scratch(self):
+        active_push = self.scratch / "git-push-active"
+        stale_preview = self.scratch / "git-preview-stale"
+        active_push.mkdir()
+        stale_preview.mkdir()
+        self.route.cleanup_scratch(("git-preview-",))
+        self.assertTrue(active_push.is_dir())
+        self.assertFalse(stale_preview.exists())
 
     def test_cleanup_failure_forces_restart_before_reconciliation(self):
         with mock.patch("external_gate.git_push.shutil.rmtree", side_effect=OSError("cleanup failed")):

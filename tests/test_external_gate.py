@@ -23,6 +23,7 @@ from external_gate.__main__ import CONFIG_KEYS, acquire_daemon_lock, read_config
 from external_gate.gate import (
     ActionResult,
     ActionRoute,
+    ApprovalSection,
     AgentHandler,
     BrowserHTTPServer,
     BrowserHandler,
@@ -52,6 +53,7 @@ class FakeRoute(ActionRoute):
         self.reconciliations = 0
         self.result = ActionResult("succeeded", "fake_succeeded", "fake action succeeded")
         self.reconcile_result = ActionResult("failed", "fake_not_applied", "fake action was not applied")
+        self.sections = []
 
     def freeze(self, metadata, _body_path, digest, size):
         value = metadata["X-Vivarium-Value"]
@@ -70,6 +72,9 @@ class FakeRoute(ActionRoute):
 
     def describe(self, action):
         return [("Value", action["value"])]
+
+    def approval_sections(self, _action):
+        return self.sections
 
     def execute(self, _action, _body_path):
         self.executions += 1
@@ -486,6 +491,24 @@ class ExternalGateTests(unittest.TestCase):
         with self.assertRaises(GateError):
             self.submit()
         self.route.describe = original_describe
+        self.route.sections = [
+            ApprovalSection("Preview", "text", "x" * (core.MAX_SECTION_CONTENT_BYTES + 1))
+        ]
+        with self.assertRaises(GateError):
+            self.submit()
+        self.route.sections = [ApprovalSection("Preview", "html", "unsafe")]
+        with self.assertRaises(GateError):
+            self.submit()
+        self.route.sections = [ApprovalSection("Preview", "text", "safe\u202eevil")]
+        with self.assertRaises(GateError):
+            self.submit()
+        self.route.sections = [
+            ApprovalSection("One", "code", "x" * 1_800),
+            ApprovalSection("Two", "code", "x" * 1_800),
+        ]
+        with self.assertRaises(GateError):
+            self.submit()
+        self.route.sections = []
         request_id = self.submit(value="result")["id"]
         self.gate.transition(request_id, "pending", "denied", "denied", "x" * 600)
         record = self.gate.load(request_id)
@@ -618,6 +641,14 @@ class ExternalGateTests(unittest.TestCase):
             server.server_close()
 
     def test_browser_auth_csrf_and_origin(self):
+        self.route.sections = [
+            ApprovalSection(
+                "Changes",
+                "diff",
+                "diff --git a/file b/file\n@@ -1 +1 @@\n-old\n+<script>alert(1)</script>",
+                "1 file changed",
+            )
+        ]
         request_id = self.submit()["id"]
         BrowserHandler.gate = self.gate
         server = BrowserHTTPServer(("127.0.0.1", 0), BrowserHandler)
@@ -633,7 +664,14 @@ class ExternalGateTests(unittest.TestCase):
             page_response = urllib.request.urlopen(page_request)
             self.assertEqual(page_response.headers["Referrer-Policy"], "same-origin")
             page = page_response.read().decode()
+            self.assertIn("External Action Gate", page)
             self.assertIn("Bundle SHA-256", page)
+            self.assertIn("Approve once", page)
+            self.assertIn('class="addition"', page)
+            self.assertIn('class="deletion"', page)
+            self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+            self.assertNotIn("<script>", page)
+            self.assertNotIn('http-equiv="refresh"', page)
             form = urlencode({"csrf": self.gate.csrf_token}).encode()
             wrong_origin = urllib.request.Request(
                 base + f"/r/{request_id}/approve",
@@ -667,11 +705,45 @@ class ExternalGateTests(unittest.TestCase):
                 method="POST",
                 headers={"Authorization": auth, "Content-Type": "application/x-www-form-urlencoded"},
             )
-            urllib.request.urlopen(approved)
+            approved_response = urllib.request.urlopen(approved)
+            self.assertIn("script-src 'nonce-", approved_response.headers["Content-Security-Policy"])
+            self.assertIn("connect-src 'self'", approved_response.headers["Content-Security-Policy"])
+            approved_page = approved_response.read().decode()
+            self.assertNotIn('http-equiv="refresh"', approved_page)
+            self.assertIn("Watching for the durable result", approved_page)
+            self.assertIn('fetch(location.pathname+"/status"', approved_page)
             self.assertEqual(self.gate.load(request_id)["state"], "approved")
+            status_request = urllib.request.Request(
+                base + f"/r/{request_id}/status", headers={"Authorization": auth}
+            )
+            status = json.loads(urllib.request.urlopen(status_request).read())
+            self.assertEqual(status["state"], "approved")
+            self.gate.transition(
+                request_id, "approved", "executing", "executing", "executing approved action"
+            )
+            self.gate.transition(
+                request_id, "executing", "succeeded", "fake_succeeded", "fake action succeeded"
+            )
+            terminal_request = urllib.request.Request(
+                base + f"/r/{request_id}", headers={"Authorization": auth}
+            )
+            terminal_page = urllib.request.urlopen(terminal_request).read().decode()
+            self.assertIn("fake action succeeded", terminal_page)
+            self.assertNotIn('http-equiv="refresh"', terminal_page)
+            self.assertNotIn('fetch(location.pathname+"/status"', terminal_page)
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_diff_rendering_stays_within_page_limit_for_many_short_lines(self):
+        self.route.sections = [ApprovalSection("Large diff", "diff", "+\n" * 1_500)]
+        request_id = self.submit()["id"]
+        record, fields, sections = self.gate.approval_fields(request_id)
+        handler = object.__new__(BrowserHandler)
+        handler.gate = self.gate
+        page = handler.render_page(record, fields, sections)
+        self.assertLessEqual(len(page), core.MAX_PAGE_BYTES)
+        self.assertIn("additional preview lines omitted", page.decode())
 
     def test_browser_accepts_exact_magicdns_public_origin(self):
         config = GateConfig(
@@ -1007,14 +1079,25 @@ class ExternalGateIntegrationTests(unittest.TestCase):
             fake_bin = home / "bin"
             fake_bin.mkdir()
             marker = home / "container.marker"
+            image_id = home / "image.id"
+            image_id.write_text("sha256:image-one\n")
             log = home / "docker.log"
             docker = fake_bin / "docker"
             docker.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [[ \"${1:-}\" == compose && \"${2:-}\" == version ]]; then exit 0; fi\n"
+                "if [[ \"${1:-}\" == image && \"${2:-}\" == inspect ]]; then cat \"$FAKE_IMAGE_ID\"; exit 0; fi\n"
+                "if [[ \"${1:-}\" == container && \"${2:-}\" == inspect ]]; then\n"
+                "  [[ -e \"$FAKE_MARKER\" ]] || exit 1\n"
+                "  if [[ \" $* \" == *\" -f \"* ]]; then cat \"$FAKE_MARKER\"; fi\n"
+                "  exit 0\n"
+                "fi\n"
                 "if [[ \"${1:-}\" == compose ]]; then\n"
                 "  echo \"$*\" >> \"$FAKE_LOG\"\n"
-                "  if [[ \" $* \" == *\" up \"* && ! -e \"$FAKE_MARKER\" ]]; then touch \"$FAKE_MARKER\"; echo create >> \"$FAKE_LOG\"; fi\n"
+                "  if [[ \" $* \" == *\" up \"* ]]; then\n"
+                "    if [[ ! -e \"$FAKE_MARKER\" ]]; then echo create >> \"$FAKE_LOG\"; fi\n"
+                "    cat \"$FAKE_IMAGE_ID\" > \"$FAKE_MARKER\"\n"
+                "  fi\n"
                 "  sleep 0.15\n"
                 "  exit 0\n"
                 "fi\n"
@@ -1039,6 +1122,7 @@ class ExternalGateIntegrationTests(unittest.TestCase):
                 "SSH_AUTH_SOCK": str(agent_socket),
                 "FAKE_LOG": str(log),
                 "FAKE_MARKER": str(marker),
+                "FAKE_IMAGE_ID": str(image_id),
             }
             try:
                 processes = [
@@ -1060,6 +1144,14 @@ class ExternalGateIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(changed.returncode, 0, changed.stderr)
                 self.assertIn("--force-recreate", log.read_text().splitlines()[-1])
+                image_id.write_text("sha256:image-two\n")
+                rebuilt = subprocess.run(
+                    [str(self.root / "scripts" / "external-gate.sh"), "start"],
+                    cwd=self.root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+                self.assertIn("--force-recreate", log.read_text().splitlines()[-1])
+                self.assertEqual(marker.read_text(), image_id.read_text())
                 getent.write_text("#!/usr/bin/env bash\necho '100.64.0.4 STREAM hetzner'\n")
                 getent.chmod(0o755)
                 rejected = subprocess.run(

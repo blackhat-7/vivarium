@@ -68,9 +68,10 @@ ssh-add -l                    # must show exactly one identity
 ```
 
 Vivarium does not create, load, or manage that agent. `vpush` submits the
-current branch and prints an authenticated browser link. One approval permits
-one exact branch-create or fast-forward attempt; it never permits deletes,
-tags, arbitrary remotes, force updates, hooks, or Git LFS.
+current branch and prints an authenticated browser link. The page shows the
+bounded commit list and highlighted diff, then follows execution to its durable
+result. One approval permits one exact branch-create or fast-forward attempt; it
+never permits deletes, tags, arbitrary remotes, force updates, hooks, or Git LFS.
 
 Approval defaults to `http://127.0.0.1:7843`. The host-only
 `~/.config/vivarium/external-gate.env` may instead configure loopback behind an

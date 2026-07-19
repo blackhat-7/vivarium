@@ -35,8 +35,8 @@ Fixed MVP limits:
 - one in-flight submission reader and one bounded approval handler;
 - 1 GiB scratch `tmpfs` for Git quarantine work;
 - 16 KiB maximum `request.json`, including an 8 KiB frozen action;
-- 300-byte result, 20 description fields, 64-byte labels, 512-byte values, and a
-  32 KiB rendered approval page;
+- 300-byte result, 20 description fields, 64-byte labels, 512-byte values, up to
+  three bounded typed preview sections, and a 32 KiB rendered approval page;
 - 120-second absolute upload deadline;
 - approval port `7843`;
 - host configuration keys `EXTERNAL_GATE_ENABLE`,
@@ -191,9 +191,15 @@ agent is currently usable.
 ### Human-facing listener
 
 - `GET /r/{id}` — authenticated page derived from the frozen action.
+- `GET /r/{id}/status` — authenticated local-state read for active-page polling.
 - `POST /r/{id}/approve` — one-shot approval.
 - `POST /r/{id}/deny` — one-shot denial.
 - `GET /healthz` — liveness check.
+
+The generic page renders bounded metadata and optional typed route previews,
+never route-supplied HTML. `Approved` and `Executing` pages poll a read-only
+same-origin status endpoint with one nonce-scoped inline script, then reload only
+when the durable state changes. There are no external assets.
 
 Use the generated high-entropy approval password from the host-only `0600`
 configuration file. Mount the file read-only; do not pass the password through
@@ -223,6 +229,7 @@ class ActionRoute:
     def freeze(self, metadata, body_path, digest, size) -> JSONValue: ...
     def decode(self, frozen: JSONValue) -> object: ...
     def describe(self, action) -> list[tuple[str, str]]: ...
+    def approval_sections(self, action) -> list[ApprovalSection]: ...
     def execute(self, action, body_path) -> ActionResult: ...
     def reconcile(self, action) -> ActionResult: ...
 ```
@@ -235,6 +242,8 @@ class ActionRoute:
   `Executing`/`Uncertain` becomes terminal `Abandoned` with an explicitly unknown
   external outcome. Neither path executes a write.
 - `describe()` returns label/value fields, never HTML.
+- `approval_sections()` optionally returns bounded `text`, `code`, or `diff`
+  sections; the trusted core escapes and renders them, so routes never return HTML.
 - `execute()` performs at most one external write attempt.
 - `reconcile()` reads external state but never retries a write.
 
@@ -284,9 +293,10 @@ requests/<request-id>/
 - sanitized result capped at 300 bytes.
 
 The core rejects a frozen action over 8 KiB after canonical serialization.
-Approval descriptions are capped at 20 fields, with 64-byte labels, 512-byte
-values, and a 32 KiB final page. Route code cannot expand persistent state or UI
-memory without hitting these core limits.
+Approval descriptions are capped at 20 fields, with 64-byte labels and 512-byte
+values. Optional route previews are capped at three typed sections with bounded
+titles, summaries, and content. The final page remains capped at 32 KiB. Route
+code cannot inject HTML or expand persistent state/UI memory beyond core limits.
 
 Do not add attempt counters or transition history.
 
@@ -381,6 +391,11 @@ Preserve these restrictions:
   deadlines.
 - Deterministically remove quarantine directories; treat scratch `ENOSPC` as a
   bounded permanent request failure.
+- During `freeze()`, perform bounded local bundle validation in scratch and store
+  a small immutable commit/diff preview in the frozen action. The approval UI
+  renders the escaped unified diff with line-aware highlighting; large diffs are
+  explicitly truncated. Preview generation performs no network work and does
+  not replace authoritative validation immediately before execution.
 
 Use one authoritative owner/repository/ref validator in the route and mirror it
 in `vpush`.
@@ -443,10 +458,12 @@ cannot prove an allowed pairing. For direct Tailscale mode, the bind must match
 `tailscale ip -4`; a hostname public origin must resolve exclusively to that IP
 on the host. Proxy mode keeps the gate listener on loopback.
 
-`start` fingerprints the SSH socket path/device/inode and approval-config digest.
-It uses `docker compose up -d --build --force-recreate` when that fingerprint
-changes, and ordinary `up -d --build` otherwise. `password-reset` always forces
-recreation. Before returning, check both Unix and approval liveness endpoints.
+`start` builds first, then fingerprints the SSH socket path/device/inode,
+approval-config digest, and exact built image ID. It uses `docker compose up -d
+--no-build --force-recreate` when that identity or the running container image
+changes, and ordinary `up -d --no-build` otherwise. `password-reset` always
+forces recreation. Before returning, check both Unix and approval liveness
+endpoints.
 
 `up.sh` and `rebuild.sh` start the gate when enabled and fail closed if its
 prerequisites are invalid. `shell.sh` remains unchanged: it can enter an already
@@ -580,8 +597,8 @@ Automated tests must prove:
 - publication and every state transition are crash-durable; injected crashes
   cannot turn persisted `Executing` back into `Approved`;
 - digest changes prevent execution, frozen actions are decoded/validated on
-  reload, and JSON/action/result/description/page limits reject oversized route
-  output;
+  reload, and JSON/action/result/description/preview/page limits reject oversized
+  route output;
 - decisions and state transitions are one-shot, including approval exactly at
   the decision-deadline boundary;
 - persisted approvals cannot be stranded by a process-local signal;
@@ -617,7 +634,9 @@ Container tests must prove:
 - startup and pre-execution checks reject empty, locked, multi-key, or
   fingerprint-mismatched SSH agents, and changed SSH/config fingerprints recreate
   the container;
-- both liveness endpoints are checked before startup succeeds;
+- source-only image rebuilds change the runtime identity and recreate the gate,
+  while unchanged starts do not; both liveness endpoints are checked before
+  startup succeeds;
 - log contents and Docker rotation are bounded and contain no hostile or secret
   values;
 - `remove.sh --everything` does not leave the gate running.

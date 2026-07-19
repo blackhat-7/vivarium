@@ -237,17 +237,22 @@ start_locked() {
   install -d -m 0700 "$STATE_DIR" "$SOCKET_DIR"
   export_compose_values
 
-  local socket_identity config_digest desired previous=""
+  gate_compose build || fatal "could not build the external gate"
+
+  local socket_identity config_digest image_identity running_image desired previous=""
   socket_identity=$(stat -Lc '%n:%d:%i' "$SSH_AUTH_SOCK")
   config_digest=$(sha256sum "$CONFIG_FILE" | awk '{print $1}')
-  desired="$socket_identity:$config_digest"
+  image_identity=$(docker image inspect -f '{{.Id}}' vivarium-external-gate:latest 2>/dev/null) \
+    || fatal "could not identify the built external-gate image"
+  running_image=$(docker container inspect -f '{{.Image}}' vivarium-external-gate 2>/dev/null || true)
+  desired="$socket_identity:$config_digest:$image_identity"
   [[ -f "$RUNTIME_FILE" ]] && read -r previous <"$RUNTIME_FILE" || true
 
-  local arguments=(up -d --build)
-  if [[ "$always_recreate" == true || "$desired" != "$previous" ]]; then
+  local arguments=(up -d --no-build)
+  if [[ "$always_recreate" == true || "$desired" != "$previous" || "$running_image" != "$image_identity" ]]; then
     arguments+=(--force-recreate)
   fi
-  gate_compose "${arguments[@]}" || fatal "could not build or start the external gate"
+  gate_compose "${arguments[@]}" || fatal "could not start the external gate"
   wait_healthy
   printf '%s\n' "$desired" >"$RUNTIME_FILE"
   chmod 0600 "$RUNTIME_FILE"

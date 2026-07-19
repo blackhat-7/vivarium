@@ -31,8 +31,15 @@ MAX_RECORD_BYTES = 16 * 1024
 MAX_ACTION_BYTES = 8 * 1024
 MAX_RESULT_BYTES = 300
 MAX_DESCRIPTION_FIELDS = 20
+MAX_ESCAPED_DESCRIPTION_BYTES = 6 * 1024
+MAX_APPROVAL_SECTIONS = 3
 MAX_LABEL_BYTES = 64
 MAX_VALUE_BYTES = 512
+MAX_SECTION_TITLE_BYTES = 80
+MAX_SECTION_SUMMARY_BYTES = 512
+MAX_SECTION_CONTENT_BYTES = 3_000
+MAX_APPROVAL_PRESENTATION_BYTES = 3_600
+MAX_RENDERED_DIFF_LINES = 120
 MAX_PAGE_BYTES = 32 * 1024
 MAX_FORM_BYTES = 4 * 1024
 MAX_TERMINAL_RECORDS = 1_000
@@ -45,6 +52,7 @@ MAX_RECONCILES_PER_PASS = 2
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESULT_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 ROUTE_RE = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*\.v[1-9][0-9]*$")
+BIDI_CONTROL_RE = re.compile("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u206f]")
 OPEN_STATES = frozenset({"pending", "approved", "executing", "uncertain"})
 TERMINAL_STATES = frozenset({"succeeded", "failed", "denied", "expired", "abandoned"})
 BODY_DELETE_STATES = TERMINAL_STATES | {"uncertain"}
@@ -71,6 +79,17 @@ class ActionResult:
     restart_before_reconcile: bool = False
 
 
+@dataclass(frozen=True)
+class ApprovalSection:
+    """Bounded route-specific content rendered by the trusted generic UI."""
+
+    title: str
+    kind: str
+    content: str
+    summary: str = ""
+    truncated: bool = False
+
+
 class ActionRoute:
     """Small reviewed interface implemented by every production action."""
 
@@ -78,6 +97,7 @@ class ActionRoute:
     content_type: str
     max_body_bytes: int
     metadata_headers: tuple[str, ...]
+    display_name: str = ""
 
     def freeze(self, metadata: dict[str, str], body_path: Path, digest: str, size: int):
         raise NotImplementedError
@@ -87,6 +107,9 @@ class ActionRoute:
 
     def describe(self, action) -> list[tuple[str, str]]:
         raise NotImplementedError
+
+    def approval_sections(self, action) -> list[ApprovalSection]:
+        return []
 
     def execute(self, action, body_path: Path) -> ActionResult:
         raise NotImplementedError
@@ -120,6 +143,10 @@ def fsync_dir(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def neutralize_bidi_controls(value: str) -> str:
+    return BIDI_CONTROL_RE.sub(lambda match: f"\\u{ord(match.group()):04X}", value)
 
 
 def bounded_text(value: str, limit: int) -> str:
@@ -317,15 +344,55 @@ class Gate:
         if not isinstance(fields, list) or len(fields) > MAX_DESCRIPTION_FIELDS:
             raise ValueError("invalid approval description")
         checked: list[tuple[str, str]] = []
+        escaped_bytes = 0
         for field in fields:
             if not isinstance(field, tuple) or len(field) != 2:
                 raise ValueError("invalid approval description")
             label, value = field
             if not isinstance(label, str) or not isinstance(value, str):
                 raise ValueError("invalid approval description")
+            if (
+                any(ord(char) < 32 for char in label + value)
+                or BIDI_CONTROL_RE.search(label + value) is not None
+            ):
+                raise ValueError("invalid approval description text")
             if len(label.encode("utf-8")) > MAX_LABEL_BYTES or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
                 raise ValueError("approval description is too large")
+            escaped_bytes += len(html.escape(label).encode("utf-8")) + len(html.escape(value).encode("utf-8"))
+            if escaped_bytes > MAX_ESCAPED_DESCRIPTION_BYTES:
+                raise ValueError("escaped approval description is too large")
             checked.append((label, value))
+        return checked
+
+    def _validate_sections(self, route: ActionRoute, action) -> list[ApprovalSection]:
+        sections = route.approval_sections(action)
+        if not isinstance(sections, list) or len(sections) > MAX_APPROVAL_SECTIONS:
+            raise ValueError("invalid approval sections")
+        checked: list[ApprovalSection] = []
+        presentation_bytes = 0
+        for section in sections:
+            if not isinstance(section, ApprovalSection) or section.kind not in {"diff", "code", "text"}:
+                raise ValueError("invalid approval section")
+            if not isinstance(section.truncated, bool):
+                raise ValueError("invalid approval section")
+            values = (
+                (section.title, MAX_SECTION_TITLE_BYTES, False),
+                (section.summary, MAX_SECTION_SUMMARY_BYTES, True),
+                (section.content, MAX_SECTION_CONTENT_BYTES, True),
+            )
+            for value, limit, multiline in values:
+                if not isinstance(value, str) or len(value.encode("utf-8")) > limit:
+                    raise ValueError("approval section is too large")
+                presentation_bytes += len(value.encode("utf-8"))
+                if presentation_bytes > MAX_APPROVAL_PRESENTATION_BYTES:
+                    raise ValueError("approval section is too large")
+                allowed_controls = {"\t", "\n"} if multiline else {"\t"}
+                if (
+                    any(ord(char) < 32 and char not in allowed_controls for char in value)
+                    or BIDI_CONTROL_RE.search(value) is not None
+                ):
+                    raise ValueError("invalid approval section text")
+            checked.append(section)
         return checked
 
     def _decode(self, record: dict):
@@ -470,6 +537,7 @@ class Gate:
                     raise GateError(413, "action_size", "frozen action is too large")
                 action = route.decode(frozen)
                 self._validate_description(route, action)
+                self._validate_sections(route, action)
             except GateError:
                 raise
             except (OSError, ValueError) as error:
@@ -572,7 +640,9 @@ class Gate:
                 return True
             return False
 
-    def approval_fields(self, request_id: str) -> tuple[dict, list[tuple[str, str]]] | None:
+    def approval_fields(
+        self, request_id: str
+    ) -> tuple[dict, list[tuple[str, str]], list[ApprovalSection]] | None:
         with self.condition:
             try:
                 record = self.load(request_id)
@@ -587,12 +657,13 @@ class Gate:
             route, action = decoded
             try:
                 fields = self._validate_description(route, action)
+                sections = self._validate_sections(route, action)
             except ValueError:
                 if record["state"] not in TERMINAL_STATES:
                     target = "failed" if record["state"] in {"pending", "approved"} else "abandoned"
                     self.transition(request_id, record["state"], target, "invalid_description", "route description is invalid")
                 return None
-            return record, fields
+            return record, fields, sections
 
     def _hash_body(self, path: Path) -> str:
         digest = hashlib.sha256()
@@ -878,7 +949,12 @@ class BrowserHandler(BoundedHandler):
 
     def send_response(self, code, message=None):
         super().send_response(code, message)
-        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+        nonce = getattr(self, "csp_nonce", "")
+        dynamic = f"; script-src 'nonce-{nonce}'; connect-src 'self'" if nonce else ""
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + dynamic,
+        )
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
@@ -915,6 +991,14 @@ class BrowserHandler(BoundedHandler):
             return
         if not self.require_auth():
             return
+        status_match = re.fullmatch(r"/r/([0-9a-f]{32})/status", self.path)
+        if status_match:
+            status = self.gate.status(status_match.group(1))
+            if status is None:
+                self.fixed_error(GateError(404, "not_found", "request not found"))
+                return
+            self.json_response(200, status)
+            return
         match = re.fullmatch(r"/r/([0-9a-f]{32})", self.path)
         if not match:
             self.fixed_error(GateError(404, "not_found", "request not found"))
@@ -923,8 +1007,12 @@ class BrowserHandler(BoundedHandler):
         if loaded is None:
             self.fixed_error(GateError(404, "not_found", "request not found"))
             return
-        record, fields = loaded
-        body = self.render_page(record, fields)
+        record, fields, sections = loaded
+        if record["state"] in {"approved", "executing"}:
+            self.csp_nonce = secrets.token_urlsafe(18)
+        body = self.render_page(record, fields, sections)
+        if len(body) > MAX_PAGE_BYTES:
+            body = self.render_page(record, fields, [], previews_omitted=True)
         if len(body) > MAX_PAGE_BYTES:
             self.fixed_error(GateError(500, "page_size", "approval page exceeds its limit"))
             return
@@ -976,21 +1064,157 @@ class BrowserHandler(BoundedHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def render_page(self, record: dict, fields: list[tuple[str, str]]) -> bytes:
+    @staticmethod
+    def _format_timestamp(value: float) -> str:
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(value))
+
+    @staticmethod
+    def _route_name(route: ActionRoute) -> str:
+        name = route.display_name.strip() if isinstance(route.display_name, str) else ""
+        if name and len(name.encode("utf-8")) <= MAX_SECTION_TITLE_BYTES and not any(ord(char) < 32 for char in name):
+            return name
+        stem = re.sub(r"\.v[1-9][0-9]*$", "", route.name)
+        return " ".join(part.capitalize() for part in re.split(r"[.-]", stem))
+
+    @staticmethod
+    def _render_diff(content: str) -> str:
+        if not content:
+            return '<div class="empty-preview">No textual file changes in this request.</div>'
+        rows: list[str] = []
+        old_line: int | None = None
+        new_line: int | None = None
+        lines = content.splitlines()
+        omitted = len(lines) > MAX_RENDERED_DIFF_LINES
+        for line in lines[:MAX_RENDERED_DIFF_LINES]:
+            old_number = ""
+            new_number = ""
+            kind = "context"
+            if line.startswith("@@"):
+                match = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+                if match:
+                    old_line, new_line = int(match.group(1)), int(match.group(2))
+                kind = "hunk"
+            elif line.startswith("diff --git "):
+                old_line = new_line = None
+                kind = "file"
+            elif line.startswith(("index ", "--- ", "+++ ", "new file mode ", "deleted file mode ", "similarity index ", "rename from ", "rename to ")):
+                kind = "meta"
+            elif line.startswith("+"):
+                kind = "addition"
+                if new_line is not None:
+                    new_number = str(new_line)
+                    new_line += 1
+            elif line.startswith("-"):
+                kind = "deletion"
+                if old_line is not None:
+                    old_number = str(old_line)
+                    old_line += 1
+            elif line.startswith(" "):
+                if old_line is not None and new_line is not None:
+                    old_number, new_number = str(old_line), str(new_line)
+                    old_line += 1
+                    new_line += 1
+            elif line.startswith("\\"):
+                kind = "meta"
+            rows.append(
+                f'<tr class="{kind}"><td class="line-number">{old_number}</td>'
+                f'<td class="line-number">{new_number}</td><td class="diff-code"><code>{html.escape(line)}</code></td></tr>'
+            )
+        if omitted:
+            rows.append(
+                '<tr class="meta"><td class="line-number"></td><td class="line-number"></td>'
+                '<td class="diff-code"><code>… additional preview lines omitted</code></td></tr>'
+            )
+        headings = (
+            '<thead class="visually-hidden"><tr><th scope="col">Old line</th>'
+            '<th scope="col">New line</th><th scope="col">Code</th></tr></thead>'
+        )
+        return '<div class="diff-scroll"><table class="diff-table" aria-label="Git diff">' + headings + '<tbody>' + "".join(rows) + "</tbody></table></div>"
+
+    def _render_section(self, section: ApprovalSection) -> str:
+        summary = f'<p class="section-summary">{html.escape(section.summary)}</p>' if section.summary else ""
+        truncated = '<span class="preview-note">Preview truncated</span>' if section.truncated else ""
+        if section.kind == "diff":
+            content = self._render_diff(section.content)
+        elif section.kind == "code":
+            content = f'<pre class="code-block"><code>{html.escape(section.content)}</code></pre>'
+        else:
+            content = f'<p class="text-preview">{html.escape(section.content)}</p>'
+        return (
+            '<section class="card preview-card"><div class="section-heading"><div>'
+            f'<p class="eyebrow">Request preview</p><h2>{html.escape(section.title)}</h2>{summary}'
+            f'</div>{truncated}</div>{content}</section>'
+        )
+
+    def render_page(
+        self,
+        record: dict,
+        fields: list[tuple[str, str]],
+        sections: list[ApprovalSection],
+        *,
+        previews_omitted: bool = False,
+    ) -> bytes:
+        state = record["state"]
+        state_copy = {
+            "pending": "Review the immutable request below before authorizing one external write attempt.",
+            "approved": "Approval recorded. The request is queued for its single execution attempt.",
+            "executing": "The approved action is executing now. This page refreshes automatically.",
+            "succeeded": "The external action completed and its outcome was confirmed.",
+            "failed": "The action stopped without a confirmed successful external write.",
+            "denied": "This request was denied and cannot be executed.",
+            "expired": "The approval window closed before a decision was recorded.",
+            "uncertain": "The external outcome could not be proven. Do not submit a duplicate action.",
+            "abandoned": "This uncertain request can no longer be reconciled automatically.",
+        }
+        state_label = state.replace("_", " ").title()
+        route = self.gate.routes[record["route"]]
+        title = self._route_name(route)
+        active = state in {"approved", "executing"}
         rows = list(fields) + [
+            ("Request ID", record["id"]),
             ("Bundle SHA-256", record["body_sha256"]),
-            ("State", record["state"]),
+            ("Created", self._format_timestamp(record["created_at"])),
+            ("Approval deadline", self._format_timestamp(record["decision_deadline"])),
         ]
         details = "".join(
-            f"<dt>{html.escape(label)}</dt><dd><code>{html.escape(value)}</code></dd>" for label, value in rows
+            '<div class="meta-item">'
+            f'<dt>{html.escape(label)}</dt><dd><code>{html.escape(value)}</code></dd></div>'
+            for label, value in rows
         )
-        actions = ""
-        if record["state"] == "pending":
-            csrf = html.escape(self.gate.csrf_token)
-            actions = (
-                f'<form method="post" action="/r/{record["id"]}/approve"><input type="hidden" name="csrf" value="{csrf}"><button>Approve once</button></form>'
-                f'<form method="post" action="/r/{record["id"]}/deny"><input type="hidden" name="csrf" value="{csrf}"><button class="deny">Deny</button></form>'
+        previews = "".join(self._render_section(section) for section in sections)
+        if previews_omitted:
+            previews = (
+                '<section class="card preview-card"><p class="eyebrow">Request preview</p>'
+                '<h2>Preview omitted</h2><p class="section-summary">The optional preview exceeded the bounded page size. '
+                'Review the complete immutable request metadata above before deciding.</p></section>'
             )
-        elif record["result"]["message"]:
-            actions = f'<p>{html.escape(record["result"]["message"])}</p>'
-        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>External action approval</title><style>:root{{color-scheme:dark}}body{{max-width:800px;margin:6vh auto;padding:0 18px;font:16px system-ui;background:#0b0d10;color:#eef2f7}}dl{{display:grid;grid-template-columns:10rem 1fr;gap:.8rem;padding:1.3rem;background:#15191f;border-radius:12px}}dt{{color:#9ba7b6}}dd{{margin:0;overflow-wrap:anywhere}}form{{display:inline-block;margin:1rem 1rem 0 0}}button{{padding:.8rem 1.2rem;background:#37d67a;border:0;border-radius:8px;font-weight:700}}.deny{{background:#ff6376}}</style></head><body><p>One-time approval</p><h1>{html.escape(record["route"])}</h1><dl>{details}</dl>{actions}</body></html>'''.encode("utf-8")
+        result = ""
+        if record["result"]["message"]:
+            result = (
+                f'<section class="card result-card result-{state}"><p class="eyebrow">Current outcome</p>'
+                f'<h2>{html.escape(state_label)}</h2><p class="result-message">{html.escape(record["result"]["message"])}</p>'
+                f'<div class="result-meta"><span>Result code</span><code>{html.escape(record["result"]["code"])}</code></div></section>'
+            )
+        decision = ""
+        if state == "pending":
+            csrf = html.escape(self.gate.csrf_token)
+            decision = (
+                '<section class="card decision-card"><p class="eyebrow">Decision required</p>'
+                '<h2>Authorize this exact action?</h2>'
+                '<p class="decision-copy">Approval is immutable and permits at most one external write attempt. It cannot be reused.</p>'
+                '<div class="actions">'
+                f'<form method="post" action="/r/{record["id"]}/approve"><input type="hidden" name="csrf" value="{csrf}"><button class="approve" type="submit"><span>Approve once</span><small>Execute exact request</small></button></form>'
+                f'<form method="post" action="/r/{record["id"]}/deny"><input type="hidden" name="csrf" value="{csrf}"><button class="deny" type="submit"><span>Deny request</span><small>Permanent decision</small></button></form>'
+                '</div></section>'
+            )
+        auto_hint = '<p class="refresh-hint"><span class="spinner" aria-hidden="true"></span>Watching for the durable result</p>' if active else ""
+        poller = ""
+        if active:
+            nonce = html.escape(self.csp_nonce, quote=True)
+            poller = f'''<script nonce="{nonce}">(()=>{{const initial=document.body.dataset.state;const poll=async()=>{{try{{const response=await fetch(location.pathname+"/status",{{cache:"no-store",headers:{{Accept:"application/json"}}}});if(response.ok){{const status=await response.json();if(status.state!==initial){{location.reload();return}}}}}}catch(_error){{}}setTimeout(poll,1200)}};setTimeout(poll,800)}})()</script>'''
+        return f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} · Vivarium</title>
+<style>
+:root{{color-scheme:dark;--bg:#080a0f;--surface:#11151d;--surface-2:#171c26;--border:#293140;--border-soft:#202735;--text:#f4f7fb;--muted:#a6b1c0;--subtle:#98a5b7;--accent:#8ca6ff;--green:#48dda0;--red:#ff7180;--amber:#f4bd56;--blue:#6aabff;--violet:#b596ff;--orange:#ff9862;--radius:18px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -12rem,#202a4c 0,transparent 38rem),linear-gradient(180deg,#0b0e15 0,var(--bg) 40rem);color:var(--text);font-size:15px;line-height:1.55}}body:before{{content:"";position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(#fff1 1px,transparent 1px),linear-gradient(90deg,#fff1 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,#000,transparent 42%)}}.shell{{position:relative;width:min(calc(100% - 32px),1040px);margin:0 auto;padding:42px 0 64px}}.brand{{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;font-weight:650;letter-spacing:.02em}}.brand-mark{{display:grid;place-items:center;width:26px;height:26px;border:1px solid #ffffff24;border-radius:8px;background:linear-gradient(145deg,#b9c7ff,#738cff);color:#10131b;font-size:12px;font-weight:900;box-shadow:0 8px 28px #7088ff45}}.brand strong{{color:var(--text)}}.brand-divider{{width:1px;height:15px;background:var(--border)}}.hero{{padding:48px 0 20px}}.hero-top{{display:flex;align-items:flex-start;justify-content:space-between;gap:28px}}.eyebrow{{margin:0 0 8px;color:var(--muted);font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}}h1{{max-width:18ch;margin:0;font-size:clamp(34px,6vw,62px);font-weight:760;letter-spacing:-.052em;line-height:1.02}}.hero-copy{{max-width:680px;margin:18px 0 0;color:#b6c0ce;font-size:17px}}.state-pill{{display:inline-flex;align-items:center;gap:9px;flex:none;margin-top:3px;padding:8px 12px;border:1px solid currentColor;border-radius:999px;background:#11151dcc;font-size:11px;font-weight:850;letter-spacing:.08em;text-transform:uppercase;box-shadow:0 10px 32px #0005}}.state-dot{{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor}}.state-pending{{color:var(--amber)}}.state-approved{{color:var(--blue)}}.state-executing{{color:var(--violet)}}.state-succeeded{{color:var(--green)}}.state-failed,.state-denied{{color:var(--red)}}.state-uncertain{{color:var(--orange)}}.state-expired,.state-abandoned{{color:var(--muted)}}.refresh-hint{{display:flex;align-items:center;gap:8px;margin:16px 0 0;color:var(--muted);font-size:13px}}.spinner{{width:13px;height:13px;border:2px solid #ffffff30;border-top-color:var(--violet);border-radius:50%;animation:spin .9s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}.card{{margin-top:16px;padding:clamp(18px,3vw,26px);background:linear-gradient(145deg,#141923f2,#0f131bf2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 18px 50px #0003,0 1px 0 #ffffff08 inset}}.card h2{{margin:0;font-size:20px;letter-spacing:-.025em}}.meta-card{{padding:12px}}.meta-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;overflow:hidden;border:1px solid var(--border-soft);border-radius:13px;background:var(--border-soft)}}.meta-item{{min-width:0;padding:15px 16px;background:var(--surface)}}dt{{color:var(--subtle);font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase}}dd{{margin:6px 0 0;overflow-wrap:anywhere;color:#dce3ec;font-weight:600}}code,pre{{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}}dd code{{font-size:12px}}.section-heading{{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:18px}}.section-summary{{max-width:700px;margin:7px 0 0;color:var(--muted);font:12px/1.55 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap}}.preview-note{{flex:none;padding:5px 8px;border:1px solid #765b2a;border-radius:999px;color:#efc777;background:#332813;font-size:10px;font-weight:800;text-transform:uppercase}}.code-block,.text-preview{{max-height:260px;margin:0;padding:15px;overflow:auto;border:1px solid var(--border-soft);border-radius:12px;background:#090c12;color:#cdd6e3;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}}.text-preview{{font-family:inherit}}.diff-scroll{{overflow:auto;border:1px solid var(--border-soft);border-radius:12px;background:#090c12}}.diff-table{{width:100%;border-collapse:collapse;font:12px/1.55 "SFMono-Regular",Consolas,monospace;white-space:pre}}.diff-table td{{padding-top:1px;padding-bottom:1px}}.line-number{{width:1%;min-width:46px;padding:0 9px;color:#8d9aac;text-align:right;vertical-align:top;user-select:none;border-right:1px solid #ffffff0c}}.diff-code{{padding:0 14px;color:#cbd4e1}}.diff-table .addition{{background:#17362699}}.diff-table .addition .diff-code{{color:#b7f5d1}}.diff-table .deletion{{background:#45212999}}.diff-table .deletion .diff-code{{color:#ffc0c7}}.diff-table .hunk{{background:#172b46}}.diff-table .hunk .diff-code{{color:#8fc2ff}}.diff-table .file{{background:#171c27}}.diff-table .file .diff-code{{padding-top:8px;color:#d6c2ff;font-weight:700}}.diff-table .meta .diff-code{{color:#7f8da0}}.empty-preview{{display:grid;place-items:center;min-height:112px;border:1px dashed #344052;border-radius:12px;color:var(--muted);background:#0a0d13}}.decision-card{{border-color:#46577d;background:linear-gradient(145deg,#182034f2,#111725f2)}}.decision-copy{{max-width:650px;margin:8px 0 0;color:var(--muted)}}.actions{{display:flex;flex-wrap:wrap;gap:12px;margin-top:22px}}form{{margin:0}}button{{display:flex;align-items:flex-start;flex-direction:column;gap:2px;min-width:190px;min-height:58px;padding:10px 16px;border:1px solid transparent;border-radius:12px;font:inherit;cursor:pointer;transition:transform .15s ease,filter .15s ease,border-color .15s ease}}button span{{font-size:14px;font-weight:800}}button small{{font-size:11px;opacity:.7}}button:hover{{transform:translateY(-1px);filter:brightness(1.08)}}button:active{{transform:translateY(0)}}button:focus-visible{{outline:3px solid #9db2ff;outline-offset:3px}}.approve{{background:linear-gradient(135deg,#f6f8fc,#cfd8e8);color:#10131a;box-shadow:0 8px 24px #dbe5ff25}}.deny{{border-color:#663540;background:#28161b;color:#ffadb6}}.result-card{{position:relative;overflow:hidden}}.result-card:before{{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--muted)}}.result-succeeded:before{{background:var(--green)}}.result-failed:before,.result-denied:before{{background:var(--red)}}.result-uncertain:before{{background:var(--orange)}}.result-executing:before{{background:var(--violet)}}.result-message{{margin:8px 0 0;color:#c3ccd9;font-size:16px}}.result-meta{{display:flex;gap:10px;align-items:center;margin-top:18px;color:var(--subtle);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}.result-meta code{{padding:4px 7px;border-radius:6px;background:#090c12;color:#aeb9c9;text-transform:none;letter-spacing:0}}.visually-hidden{{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}}.footer{{display:flex;justify-content:space-between;gap:20px;margin-top:22px;padding:0 4px;color:#8c98a9;font-size:11px}}@media(max-width:660px){{.shell{{width:min(calc(100% - 18px),1040px);padding-top:24px}}.hero{{padding-top:34px}}.hero-top{{display:block}}.state-pill{{margin-top:20px}}.meta-grid{{grid-template-columns:1fr}}.section-heading{{display:block}}.preview-note{{display:inline-flex;margin-top:10px}}.actions,.actions form,button{{width:100%}}button{{min-width:0}}.footer{{display:block}}}}@media(prefers-reduced-motion:reduce){{*{{scroll-behavior:auto!important;transition:none!important}}.spinner{{animation:none}}}}
+</style></head><body data-state="{state}"><main class="shell"><header class="brand"><span class="brand-mark">V</span><strong>Vivarium</strong><span class="brand-divider"></span><span>External Action Gate</span></header><section class="hero"><div class="hero-top"><div><p class="eyebrow">One-time external action</p><h1>{html.escape(title)}</h1><p class="hero-copy">{html.escape(state_copy[state])}</p>{auto_hint}</div><span class="state-pill state-{state}" role="status" aria-live="polite"><span class="state-dot"></span>{html.escape(state_label)}</span></div></section><section class="card meta-card"><dl class="meta-grid">{details}</dl></section>{previews}{result}{decision}<footer class="footer"><span>Immutable request · bounded execution · one-shot approval</span><span>{html.escape(record["route"])}</span></footer></main>{poller}</body></html>'''.encode("utf-8")

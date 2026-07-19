@@ -16,11 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .gate import ActionResult, ActionRoute
+from .gate import ActionResult, ActionRoute, ApprovalSection, neutralize_bidi_controls
 
 ZERO_OID = "0" * 40
 MAX_BUNDLE_BYTES = 100 * 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
+MAX_DIFF_PREVIEW_BYTES = 2_400
+MAX_DIFF_PREVIEW_LINES = 120
+MAX_DIFF_STAT_BYTES = 400
+MAX_COMMIT_PREVIEW_BYTES = 600
 OID_RE = re.compile(r"^[0-9a-f]{40}$")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -35,6 +39,11 @@ class GitPushAction:
     ref: str
     old_oid: str
     new_oid: str
+    commit_count: int = 0
+    commits: str = ""
+    diff_stat: str = ""
+    diff: str = ""
+    diff_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,28 @@ def valid_ref(ref: str) -> bool:
         return False
     forbidden = ("..", "//", "@{", " ", "~", "^", ":", "?", "*", "[", "\\")
     return not any(item in name for item in forbidden) and all(32 <= ord(char) < 127 for char in name)
+
+
+def bounded_preview(data: bytes, limit: int, max_lines: int | None = None) -> tuple[str, bool]:
+    text = neutralize_bidi_controls(data.decode("utf-8", "replace"))
+    safe = "".join(char if ord(char) >= 32 or char in {"\n", "\t"} else "�" for char in text)
+    truncated = False
+    if max_lines is not None:
+        lines = safe.splitlines()
+        if len(lines) > max_lines:
+            safe = "\n".join(lines[:max_lines])
+            truncated = True
+    encoded = safe.encode("utf-8")
+    truncated = truncated or len(encoded) > limit
+    if truncated:
+        encoded = encoded[:limit]
+        while True:
+            try:
+                safe = encoded.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                encoded = encoded[:-1]
+    return safe.rstrip(), truncated
 
 
 def validate_fields(profile: str, owner: str, repo: str, ref: str, old_oid: str, new_oid: str) -> None:
@@ -273,6 +304,7 @@ class AgentValidator:
 
 class GitPushRoute(ActionRoute):
     name = "git.push-branch.v1"
+    display_name = "Push branch to GitHub"
     content_type = "application/x-git-bundle"
     max_body_bytes = MAX_BUNDLE_BYTES
     metadata_headers = (
@@ -301,46 +333,168 @@ class GitPushRoute(ActionRoute):
         self.runner = runner or ProcessRunner()
         self.agent_validator = agent_validator or AgentValidator(ssh_socket, ssh_fingerprint, self.runner)
 
-    def freeze(self, metadata, _body_path, _digest, _size):
-        action = {
-            "profile": metadata["X-Vivarium-Profile"],
-            "owner": metadata["X-Vivarium-Owner"],
-            "repo": metadata["X-Vivarium-Repo"],
-            "ref": metadata["X-Vivarium-Ref"],
-            "old_oid": metadata["X-Vivarium-Old-Oid"],
-            "new_oid": metadata["X-Vivarium-New-Oid"],
+    def freeze(self, metadata, body_path, _digest, _size):
+        identity = [
+            metadata["X-Vivarium-Profile"],
+            metadata["X-Vivarium-Owner"],
+            metadata["X-Vivarium-Repo"],
+            metadata["X-Vivarium-Ref"],
+            metadata["X-Vivarium-Old-Oid"],
+            metadata["X-Vivarium-New-Oid"],
+        ]
+        validate_fields(*identity)
+        action = GitPushAction(*identity)
+        try:
+            commit_count, commits, diff_stat, diff, diff_truncated = self._build_preview(body_path, action)
+        except (IsolationLost, RouteFailure, ScratchCleanupError, OSError) as error:
+            raise ValueError("Git push preview validation failed") from error
+        frozen = {
+            "profile": action.profile,
+            "owner": action.owner,
+            "repo": action.repo,
+            "ref": action.ref,
+            "old_oid": action.old_oid,
+            "new_oid": action.new_oid,
+            "commit_count": commit_count,
+            "commits": commits,
+            "diff_stat": diff_stat,
+            "diff": diff,
+            "diff_truncated": diff_truncated,
         }
-        self.decode(action)
-        return action
+        self.decode(frozen)
+        return frozen
 
     def decode(self, frozen) -> GitPushAction:
-        keys = {"profile", "owner", "repo", "ref", "old_oid", "new_oid"}
-        if not isinstance(frozen, dict) or set(frozen) != keys:
+        identity_keys = {"profile", "owner", "repo", "ref", "old_oid", "new_oid"}
+        preview_keys = {"commit_count", "commits", "diff_stat", "diff", "diff_truncated"}
+        if not isinstance(frozen, dict):
             raise ValueError("invalid Git push action")
-        values = [frozen[key] for key in ("profile", "owner", "repo", "ref", "old_oid", "new_oid")]
-        validate_fields(*values)
+        keys = set(frozen)
+        if keys != identity_keys and keys != identity_keys | preview_keys:
+            raise ValueError("invalid Git push action")
+        identity = [frozen[key] for key in ("profile", "owner", "repo", "ref", "old_oid", "new_oid")]
+        validate_fields(*identity)
         checked = self._git_result(
-            self.scratch_dir, "check-ref-format", "--branch", values[3].removeprefix("refs/heads/"), timeout=5
+            self.scratch_dir, "check-ref-format", "--branch", identity[3].removeprefix("refs/heads/"), timeout=5
         )
         if checked.internal_error or checked.timed_out or not checked.group_stopped or checked.returncode != 0:
             raise ValueError("invalid Git branch")
-        return GitPushAction(*values)
+        if keys == identity_keys:
+            return GitPushAction(*identity)
+        if (
+            not isinstance(frozen["commit_count"], int)
+            or isinstance(frozen["commit_count"], bool)
+            or frozen["commit_count"] <= 0
+            or not isinstance(frozen["diff_truncated"], bool)
+        ):
+            raise ValueError("invalid Git push preview")
+        for key, limit in (
+            ("commits", MAX_COMMIT_PREVIEW_BYTES),
+            ("diff_stat", MAX_DIFF_STAT_BYTES),
+            ("diff", MAX_DIFF_PREVIEW_BYTES),
+        ):
+            value = frozen[key]
+            if (
+                not isinstance(value, str)
+                or len(value.encode("utf-8")) > limit
+                or any(ord(char) < 32 and char not in {"\n", "\t"} for char in value)
+            ):
+                raise ValueError("invalid Git push preview")
+        return GitPushAction(
+            *identity,
+            frozen["commit_count"],
+            frozen["commits"],
+            frozen["diff_stat"],
+            frozen["diff"],
+            frozen["diff_truncated"],
+        )
 
     def describe(self, action: GitPushAction):
-        return [
+        fields = [
             ("Profile", action.profile),
             ("Repository", f"{action.owner}/{action.repo}"),
-            ("Branch", action.ref),
+            ("Branch", action.ref.removeprefix("refs/heads/")),
+        ]
+        if action.commit_count:
+            noun = "commit" if action.commit_count == 1 else "commits"
+            fields.append(("Change", f"{action.commit_count} {noun}"))
+        return fields + [
             ("Expected old commit", action.old_oid),
             ("Approved new commit", action.new_oid),
         ]
 
+    def approval_sections(self, action: GitPushAction):
+        if not action.commit_count:
+            return []
+        noun = "commit" if action.commit_count == 1 else "commits"
+        sections = []
+        if action.commits:
+            sections.append(
+                ApprovalSection("Commits", "code", action.commits, f"{action.commit_count} {noun}")
+            )
+        sections.append(
+            ApprovalSection(
+                "Changes in this push",
+                "diff",
+                action.diff,
+                action.diff_stat or "No file content changes",
+                action.diff_truncated,
+            )
+        )
+        return sections
+
+    def _build_preview(self, body_path: Path, action: GitPushAction) -> tuple[int, str, str, str, bool]:
+        with self._scratch("git-preview-") as root:
+            repository = self._prepare(body_path, action, root)
+            if action.old_oid == ZERO_OID:
+                base = self._git(repository, "hash-object", "-t", "tree", "-w", "--stdin", timeout=5).strip()
+                revision = action.new_oid
+            else:
+                present = self._git_result(repository, "cat-file", "-e", f"{action.old_oid}^{{commit}}", timeout=5)
+                if not present.group_stopped:
+                    raise IsolationLost("git_process_unstopped", "Git preview process did not stop cleanly")
+                if present.internal_error or present.timed_out:
+                    raise RouteFailure("git_preview", "Git preview validation failed")
+                if present.returncode != 0:
+                    raise RouteFailure("not_fast_forward", "expected remote base is not in submitted history")
+                base = action.old_oid
+                revision = f"{action.old_oid}..{action.new_oid}"
+
+            count_text = self._git(repository, "rev-list", "--count", revision, timeout=10).strip()
+            if not re.fullmatch(r"[0-9]+", count_text):
+                raise RouteFailure("git_preview", "Git commit preview is invalid")
+            commit_count = int(count_text)
+            commits, _ = bounded_preview(
+                self._git(
+                    repository, "log", "--max-count=8", "--format=%h%x09%s", revision, timeout=10
+                ).encode(),
+                MAX_COMMIT_PREVIEW_BYTES,
+            )
+            stat_text, _ = bounded_preview(
+                self._git(
+                    repository, "diff", "--stat=90,24", "--compact-summary", "--no-ext-diff",
+                    "--no-textconv", "--no-renames", base, action.new_oid, "--", timeout=20,
+                ).encode(),
+                MAX_DIFF_STAT_BYTES,
+            )
+            diff, diff_truncated = bounded_preview(
+                self._git(
+                    repository, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                    "--unified=3", base, action.new_oid, "--", timeout=20,
+                ).encode(),
+                MAX_DIFF_PREVIEW_BYTES,
+                MAX_DIFF_PREVIEW_LINES,
+            )
+            return commit_count, commits, stat_text, diff, diff_truncated
+
     def remote_url(self, action: GitPushAction) -> str:
         return f"git@github.com:{action.owner}/{action.repo}.git"
 
-    def cleanup_scratch(self) -> None:
+    def cleanup_scratch(
+        self, prefixes: tuple[str, ...] = ("git-push-", "git-reconcile-", "git-preview-")
+    ) -> None:
         for entry in self.scratch_dir.iterdir():
-            if entry.name.startswith(("git-push-", "git-reconcile-")):
+            if entry.name.startswith(prefixes):
                 try:
                     shutil.rmtree(entry)
                 except FileNotFoundError:
@@ -350,7 +504,7 @@ class GitPushRoute(ActionRoute):
 
     @contextlib.contextmanager
     def _scratch(self, prefix: str):
-        self.cleanup_scratch()
+        self.cleanup_scratch((prefix,))
         path = Path(tempfile.mkdtemp(prefix=prefix, dir=self.scratch_dir))
         try:
             yield path
