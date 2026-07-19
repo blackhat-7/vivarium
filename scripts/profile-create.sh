@@ -37,8 +37,8 @@ AI_HARNESSES_MCP=none
 # credential cache without passing it as container env.
 # GITHUB_READ_TOKEN=
 
-# The optional push gate is host-wide, not profile-specific:
-# ./scripts/push-gate.sh enable
+# The optional external gate is host-wide, not profile-specific:
+# ./scripts/external-gate.sh enable
 
 # Optional MCP tokens; keep read-only / low-blast-radius.
 # GITHUB_MCP_TOKEN=

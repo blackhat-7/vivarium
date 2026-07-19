@@ -1,0 +1,52 @@
+name: vivarium-external-gate
+
+services:
+  external-gate:
+    build:
+      context: .
+      dockerfile: Dockerfile.external-gate
+      args:
+        UID: "${HOST_UID:?host UID is required}"
+        GID: "${HOST_GID:?host GID is required}"
+    image: vivarium-external-gate:latest
+    container_name: vivarium-external-gate
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    cpus: 1.0
+    mem_limit: 2g
+    pids_limit: 128
+    ports:
+      - "${EXTERNAL_GATE_APPROVAL_BIND_ADDR:?approval bind is required}:7843:7843"
+    volumes:
+      - type: bind
+        source: "${EXTERNAL_GATE_STATE_DIR:?state directory is required}"
+        target: /var/lib/vivarium-external-gate
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_GATE_SOCKET_DIR:?socket directory is required}"
+        target: /run/vivarium-external-gate
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_GATE_CONFIG_FILE:?configuration file is required}"
+        target: /run/vivarium-external-gate-config/external-gate.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_GATE_SSH_AUTH_SOCK:?dedicated SSH agent socket is required}"
+        target: /run/vivarium-external-gate-ssh/agent.sock
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /var/tmp/vivarium-external-gate:rw,noexec,nosuid,nodev,size=1073741824,mode=700,uid=${HOST_UID},gid=${HOST_GID}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

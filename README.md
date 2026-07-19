@@ -56,25 +56,29 @@ cloning and read-only `gh` commands when the token is set; no separate
 
 ### Optional approved pushes
 
-The host can expose its existing GitHub SSH access without giving write
-credentials to agents. Enable one broker shared by every profile:
+One hardened companion container can serve every profile without giving agents
+write credentials. Supply a dedicated host SSH agent containing exactly one
+GitHub key, then enable the gate:
 
 ```bash
-./scripts/push-gate.sh enable
+export SSH_AUTH_SOCK=/path/to/dedicated-agent.sock
+ssh-add -l                    # must show exactly one identity
+./scripts/external-gate.sh enable
 ./scripts/up.sh [profile]
 ```
 
-Inside Vivarium, `vpush` submits the current branch and prints a browser link.
-Sign in as `vivarium` with the password printed by `enable`. The host pushes
-only after the page approves the exact
-repository, commit, and branch. Direct `git push` remains blocked. The MVP
-supports canonical GitHub HTTPS origins, self-contained bundles up to 100 MiB,
-and branch creation/fast-forward only; no force, delete, tags, or Git LFS.
+Vivarium does not create, load, or manage that agent. `vpush` submits the
+current branch and prints an authenticated browser link. One approval permits
+one exact branch-create or fast-forward attempt; it never permits deletes,
+tags, arbitrary remotes, force updates, hooks, or Git LFS.
 
-For remote access, edit the host-only file
-`~/.config/vivarium/push-gate.env`: bind to one specific Tailscale IP and set
-`PUSH_GATE_PUBLIC_URL=http://hostname:7843`. Never use `0.0.0.0`; plain HTTP is
-safe here only because Tailscale encrypts the connection.
+Approval defaults to `http://127.0.0.1:7843`. The host-only
+`~/.config/vivarium/external-gate.env` may instead configure loopback behind an
+HTTPS proxy or direct HTTP on the exact literal output of `tailscale ip -4`.
+Other binds and mismatched public origins fail closed.
+
+When upgrading from the old push gate, disable it from the old checkout before
+updating. Legacy requests, URLs, configuration, and state are not migrated.
 
 ## Safety invariants
 
@@ -96,7 +100,7 @@ Do not weaken these:
 ./scripts/rebuild.sh --no-cache [profile]       # fresh image rebuild; preserves vivarium home
 ./scripts/shell.sh [profile|env-file]           # enter container
 ./scripts/git-auth.sh [profile|env-file]        # re-prime GitHub HTTPS clone credential
-./scripts/push-gate.sh <command>                 # optional host-approved pushes
+./scripts/external-gate.sh <command>             # optional host-approved actions
 ./scripts/profile-create.sh <profile>           # create profiles/<profile>.env
 ./scripts/update.sh [profile|env-file]          # fast-forward repo and rebuild
 ./scripts/backup.sh [profile|env-file]          # snapshot profile work dir
@@ -114,7 +118,9 @@ For parallel Paseo profiles, set different `PASEO_PORT` values.
 
 - `Dockerfile` — Ubuntu image, non-root user, optional agent installs
 - `.dockerignore` — small, secret-free Docker build context
-- `compose.yaml` — runtime hardening, mount, limits, restart policy
+- `compose.yaml` — profile hardening, mounts, limits, and restart policy
+- `compose.external-gate.yaml` — standalone hardened host-action gate
+- `compose.external-gate-client.yaml` — request-socket-only profile overlay
 - `entrypoint.sh` — home bootstrap and startup safety config
 - `skel/AGENTS.md` — default global rules installed for Pi, opencode, and Claude Code
 - `scripts/build-ai-harnesses.sh` — build-time yolo ai-harnesses profile

@@ -16,10 +16,10 @@ fi
 export -n GITHUB_READ_TOKEN 2>/dev/null || true
 unset GITHUB_READ_TOKEN
 
-# A configured broker is shared by every profile and inherits the host's
-# existing SSH authentication. If enabled, startup is fail-closed.
-if $PUSH_GATE_HOST_ENABLED; then
-  ./scripts/push-gate.sh start
+# The optional external gate is shared by every profile. If enabled, its
+# dedicated agent, listener, and container must all validate before profile work.
+if $EXTERNAL_GATE_HOST_ENABLED; then
+  ./scripts/external-gate.sh start
 fi
 
 # BuildKit: needed for the apt cache-mount in the Dockerfile and for the

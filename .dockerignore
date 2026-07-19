@@ -1,9 +1,13 @@
 # Keep Docker build context small and secret-free.
 *
 !Dockerfile
+!Dockerfile.external-gate
 !entrypoint.sh
 !scripts/
 !scripts/build-ai-harnesses.sh
 !scripts/vpush
+!external_gate/
+!external_gate/*.py
+!external_gate/github_known_hosts
 !skel/
 !skel/AGENTS.md
