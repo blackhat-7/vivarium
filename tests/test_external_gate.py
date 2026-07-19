@@ -667,10 +667,13 @@ class ExternalGateTests(unittest.TestCase):
             self.assertIn("External Action Gate", page)
             self.assertIn("Bundle SHA-256", page)
             self.assertIn("Approve once", page)
+            self.assertIn('class="summary-grid"', page)
+            self.assertIn('<details class="technical-details">', page)
             self.assertIn('class="addition"', page)
             self.assertIn('class="deletion"', page)
             self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
             self.assertNotIn("<script>", page)
+            self.assertLess(page.index('aria-label="Git diff"'), page.index("Authorize this exact action?"))
             self.assertNotIn('http-equiv="refresh"', page)
             form = urlencode({"csrf": self.gate.csrf_token}).encode()
             wrong_origin = urllib.request.Request(

@@ -196,8 +196,10 @@ agent is currently usable.
 - `POST /r/{id}/deny` — one-shot denial.
 - `GET /healthz` — liveness check.
 
-The generic page renders bounded metadata and optional typed route previews,
-never route-supplied HTML. `Approved` and `Executing` pages poll a read-only
+The generic page prioritizes the first four route facts and the review preview;
+request IDs, full hashes, timestamps, and remaining fields stay available in a
+collapsed technical disclosure. It renders bounded typed previews, never
+route-supplied HTML. `Approved` and `Executing` pages poll a read-only
 same-origin status endpoint with one nonce-scoped inline script, then reload only
 when the durable state changes. There are no external assets.
 

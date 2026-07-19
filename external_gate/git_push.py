@@ -411,13 +411,15 @@ class GitPushRoute(ActionRoute):
 
     def describe(self, action: GitPushAction):
         fields = [
-            ("Profile", action.profile),
             ("Repository", f"{action.owner}/{action.repo}"),
             ("Branch", action.ref.removeprefix("refs/heads/")),
         ]
         if action.commit_count:
             noun = "commit" if action.commit_count == 1 else "commits"
-            fields.append(("Change", f"{action.commit_count} {noun}"))
+            change = f"{action.commit_count} {noun}"
+        else:
+            change = "Preview unavailable"
+        fields.extend((("Change", change), ("Profile", action.profile)))
         return fields + [
             ("Expected old commit", action.old_oid),
             ("Approved new commit", action.new_oid),
@@ -427,12 +429,7 @@ class GitPushRoute(ActionRoute):
         if not action.commit_count:
             return []
         noun = "commit" if action.commit_count == 1 else "commits"
-        sections = []
-        if action.commits:
-            sections.append(
-                ApprovalSection("Commits", "code", action.commits, f"{action.commit_count} {noun}")
-            )
-        sections.append(
+        sections = [
             ApprovalSection(
                 "Changes in this push",
                 "diff",
@@ -440,7 +437,11 @@ class GitPushRoute(ActionRoute):
                 action.diff_stat or "No file content changes",
                 action.diff_truncated,
             )
-        )
+        ]
+        if action.commits:
+            sections.append(
+                ApprovalSection("Commits", "code", action.commits, f"{action.commit_count} {noun}")
+            )
         return sections
 
     def _build_preview(self, body_path: Path, action: GitPushAction) -> tuple[int, str, str, str, bool]:

@@ -131,9 +131,14 @@ class GitPushRouteTests(unittest.TestCase):
         self.assertEqual(action.new_oid, new_oid)
         self.assertEqual(action.commit_count, 1)
         self.assertIn("+one", action.diff)
-        self.assertEqual(self.route.describe(action)[1], ("Repository", "example/repo"))
+        description = self.route.describe(action)
+        self.assertEqual(
+            [label for label, _value in description[:4]],
+            ["Repository", "Branch", "Change", "Profile"],
+        )
+        self.assertEqual(description[0], ("Repository", "example/repo"))
         sections = self.route.approval_sections(action)
-        self.assertEqual([section.kind for section in sections], ["code", "diff"])
+        self.assertEqual([section.kind for section in sections], ["diff", "code"])
 
     def test_decode_preserves_existing_v1_actions_without_a_preview(self):
         new_oid = subprocess.check_output(
@@ -147,7 +152,10 @@ class GitPushRouteTests(unittest.TestCase):
         self.assertEqual(action.new_oid, new_oid)
         self.assertEqual(action.commit_count, 0)
         self.assertEqual(self.route.approval_sections(action), [])
-        self.assertNotIn("Change", [label for label, _value in self.route.describe(action)])
+        description = self.route.describe(action)
+        self.assertEqual([label for label, _value in description[:4]], ["Repository", "Branch", "Change", "Profile"])
+        self.assertEqual(description[2], ("Change", "Preview unavailable"))
+        self.assertEqual([label for label, _value in description[4:]], ["Expected old commit", "Approved new commit"])
 
     def test_diff_preview_is_bounded_and_marks_truncation(self):
         old_oid = subprocess.check_output(
