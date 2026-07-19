@@ -658,6 +658,44 @@ class ExternalGateTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_browser_accepts_exact_magicdns_public_origin(self):
+        config = GateConfig(
+            state_dir=self.root / "magicdns-state",
+            socket_path=self.root / "magicdns-socket" / "request.sock",
+            public_origin="http://hetzner:7843",
+            password=self.config.password,
+        )
+        gate = Gate(
+            config, {self.route.name: FakeRoute()},
+            wall_clock=self.clock, monotonic=self.monotonic, fatal_exit=lambda: None,
+        )
+        request_id = self.submit(gate=gate)["id"]
+        BrowserHandler.gate = gate
+        server = BrowserHTTPServer(("127.0.0.1", 0), BrowserHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        auth = "Basic " + base64.b64encode(("vivarium:" + config.password).encode()).decode()
+        try:
+            page_request = urllib.request.Request(base + f"/r/{request_id}", headers={"Authorization": auth})
+            page = urllib.request.urlopen(page_request).read().decode()
+            csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+            approved = urllib.request.Request(
+                base + f"/r/{request_id}/approve",
+                data=urlencode({"csrf": csrf}).encode(),
+                method="POST",
+                headers={
+                    "Authorization": auth,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "http://hetzner:7843",
+                },
+            )
+            urllib.request.urlopen(approved)
+            self.assertEqual(gate.load(request_id)["state"], "approved")
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 class ExternalGateConfigTests(unittest.TestCase):
     def values(self, mode="loopback", bind="127.0.0.1", public="http://127.0.0.1:7843"):
@@ -680,11 +718,30 @@ class ExternalGateConfigTests(unittest.TestCase):
             validate_transport(self.values("tailscale", "100.64.0.2", "http://100.64.0.2:7843")),
             "http://100.64.0.2:7843",
         )
+        magicdns_answer = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.2", 0)),
+        ]
+        with mock.patch("external_gate.__main__.socket.getaddrinfo", return_value=magicdns_answer):
+            self.assertEqual(
+                validate_transport(self.values("tailscale", "100.64.0.2", "http://hetzner:7843")),
+                "http://hetzner:7843",
+            )
+        with mock.patch(
+            "external_gate.__main__.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.9", 0))],
+        ):
+            with self.assertRaises(ValueError):
+                validate_transport(self.values("tailscale", "100.64.0.2", "http://hetzner:7843"))
         rejected = [
             self.values("loopback", "127.0.0.1", "http://localhost:7843"),
             self.values("proxy", "0.0.0.0", "https://gate.example"),
             self.values("tailscale", "100.64.0.2", "http://100.64.0.3:7843"),
             self.values("tailscale", "100.64.0.2", "https://100.64.0.2:7843"),
+            self.values("tailscale", "100.64.0.2", "http://HETZNER:7843"),
+            self.values("tailscale", "100.64.0.2", "http://bad_name:7843"),
+            self.values("tailscale", "100.64.0.2", "http://1681915906:7843"),
+            self.values("tailscale", "100.64.0.2", "http://100.64.2:7843"),
+            self.values("tailscale", "100.64.0.2", "http://0x64400002:7843"),
             self.values("loopback", "127.0.0.1", "http://127.0.0.1:7843/path"),
         ]
         for values in rejected:
@@ -923,7 +980,9 @@ class ExternalGateIntegrationTests(unittest.TestCase):
             home = Path(temporary)
             config = home / ".config" / "vivarium" / "external-gate.env"
             config.parent.mkdir(parents=True)
-            values = ExternalGateConfigTests().values()
+            values = ExternalGateConfigTests().values(
+                "tailscale", "100.64.0.3", "http://hetzner:7843"
+            )
             values["EXTERNAL_GATE_SSH_KEY_FINGERPRINT"] = "SHA256:test"
             config.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n")
             config.chmod(0o600)
@@ -953,6 +1012,12 @@ class ExternalGateIntegrationTests(unittest.TestCase):
             curl = fake_bin / "curl"
             curl.write_text("#!/usr/bin/env bash\nexit 0\n")
             curl.chmod(0o755)
+            tailscale = fake_bin / "tailscale"
+            tailscale.write_text("#!/usr/bin/env bash\necho 100.64.0.3\n")
+            tailscale.chmod(0o755)
+            getent = fake_bin / "getent"
+            getent.write_text("#!/usr/bin/env bash\necho '100.64.0.3 STREAM hetzner'\n")
+            getent.chmod(0o755)
             env = {
                 "HOME": str(home),
                 "PATH": f"{fake_bin}:/usr/bin:/bin",
@@ -980,6 +1045,14 @@ class ExternalGateIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(changed.returncode, 0, changed.stderr)
                 self.assertIn("--force-recreate", log.read_text().splitlines()[-1])
+                getent.write_text("#!/usr/bin/env bash\necho '100.64.0.4 STREAM hetzner'\n")
+                getent.chmod(0o755)
+                rejected = subprocess.run(
+                    [str(self.root / "scripts" / "external-gate.sh"), "start"],
+                    cwd=self.root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("resolve exclusively", rejected.stderr)
             finally:
                 agent.close()
 

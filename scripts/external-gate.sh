@@ -72,6 +72,8 @@ validate_transport() {
   python3 - "$EXTERNAL_GATE_APPROVAL_MODE" "$EXTERNAL_GATE_APPROVAL_BIND_ADDR" "$EXTERNAL_GATE_PUBLIC_URL" "$APPROVAL_PORT" <<'PY' \
     || fatal "invalid approval listener/public-origin pairing"
 import ipaddress
+import re
+import socket
 import sys
 from urllib.parse import urlsplit
 
@@ -98,18 +100,32 @@ if mode == "loopback":
 elif mode == "proxy":
     valid = bind == "127.0.0.1" and parsed.scheme == "https"
 elif mode == "tailscale":
+    dns_name = re.compile(r"^(?=.{1,253}$)(?=.*[a-z])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$")
     try:
         address = ipaddress.ip_address(bind)
     except ValueError:
         valid = False
     else:
+        canonical = public == f"http://{parsed.hostname}:{port}"
+        try:
+            public_address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            try:
+                socket.inet_aton(parsed.hostname)
+            except OSError:
+                public_host_valid = dns_name.fullmatch(parsed.hostname) is not None
+            else:
+                public_host_valid = False
+        else:
+            public_host_valid = public_address == address
         valid = (
             address.version == 4
             and not address.is_loopback
             and not address.is_unspecified
             and parsed.scheme == "http"
-            and parsed.hostname == bind
             and public_port == port
+            and canonical
+            and public_host_valid
         )
 else:
     valid = False
@@ -148,12 +164,25 @@ validate_agent() {
 validate_tailscale_bind() {
   [[ "$EXTERNAL_GATE_APPROVAL_MODE" == tailscale ]] || return 0
   command -v tailscale >/dev/null || fatal "tailscale is required for direct Tailscale approval mode"
-  local addresses
+  local addresses public_host resolved
   addresses=$(tailscale ip -4 2>/dev/null) || fatal "could not read the current Tailscale IPv4 address"
   [[ $(printf '%s\n' "$addresses" | awk 'NF {count++} END {print count+0}') -eq 1 ]] \
     || fatal "direct Tailscale mode requires exactly one current Tailscale IPv4 address"
   [[ "$addresses" == "$EXTERNAL_GATE_APPROVAL_BIND_ADDR" ]] \
     || fatal "approval bind must exactly match the current output of tailscale ip -4"
+  public_host=$(python3 - "$EXTERNAL_GATE_PUBLIC_URL" <<'PY'
+from sys import argv
+from urllib.parse import urlsplit
+print(urlsplit(argv[1]).hostname)
+PY
+)
+  [[ "$public_host" != "$EXTERNAL_GATE_APPROVAL_BIND_ADDR" ]] || return 0
+  command -v getent >/dev/null || fatal "getent is required to verify a Tailscale MagicDNS hostname"
+  resolved=$(getent ahostsv4 "$public_host" 2>/dev/null | awk 'NF {print $1}' | sort -u) \
+    || fatal "could not resolve the Tailscale MagicDNS hostname"
+  [[ $(printf '%s\n' "$resolved" | awk 'NF {count++} END {print count+0}') -eq 1 \
+      && "$resolved" == "$EXTERNAL_GATE_APPROVAL_BIND_ADDR" ]] \
+    || fatal "Tailscale MagicDNS hostname must resolve exclusively to the approval bind IP"
 }
 
 legacy_gate_running() {

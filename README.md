@@ -74,8 +74,9 @@ tags, arbitrary remotes, force updates, hooks, or Git LFS.
 
 Approval defaults to `http://127.0.0.1:7843`. The host-only
 `~/.config/vivarium/external-gate.env` may instead configure loopback behind an
-HTTPS proxy or direct HTTP on the exact literal output of `tailscale ip -4`.
-Other binds and mismatched public origins fail closed.
+HTTPS proxy or direct HTTP on the exact output of `tailscale ip -4`. Direct
+Tailscale mode may use a lowercase MagicDNS hostname only when the host resolves
+it exclusively to that IP. Other binds and mismatched origins fail closed.
 
 When upgrading from the old push gate, disable it from the old checkout before
 updating. Legacy requests, URLs, configuration, and state are not migrated.

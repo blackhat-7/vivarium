@@ -124,8 +124,9 @@ use a separate gate. Do not build executor isolation now.
     `http://127.0.0.1:PORT`;
   - HTTPS proxy: listener `127.0.0.1:PORT` and an `https://HOST[:PORT]` public
     origin owned by the operator's proxy;
-  - direct Tailscale: listener IP exactly equals `tailscale ip -4`, and the HTTP
-    public origin uses that same literal IP and published port.
+  - direct Tailscale: listener IP exactly equals `tailscale ip -4`; the HTTP
+    public origin uses either that literal IP or a lowercase MagicDNS hostname
+    that the host resolves exclusively to that IP, with the published port.
 - Reject arbitrary LAN/WAN binds and mismatched HTTP origins. An `https://`
   public URL never permits the gate itself to expose plaintext on a non-loopback
   interface.
@@ -436,9 +437,9 @@ inversion during stop/recreate.
 When the optional gate is enabled, every unsafe or unavailable prerequisite
 fails fast with `[FATAL]` and names `./scripts/external-gate.sh disable`. `start`
 validates the complete listener/public-origin tuple and refuses to run if it
-cannot prove an allowed pairing. For direct Tailscale mode, the bind and literal
-public-origin IP must exactly match the current output of `tailscale ip -4`;
-proxy mode keeps the gate listener on loopback.
+cannot prove an allowed pairing. For direct Tailscale mode, the bind must match
+`tailscale ip -4`; a hostname public origin must resolve exclusively to that IP
+on the host. Proxy mode keeps the gate listener on loopback.
 
 `start` fingerprints the SSH socket path/device/inode and approval-config digest.
 It uses `docker compose up -d --build --force-recreate` when that fingerprint
@@ -607,8 +608,9 @@ Container tests must prove:
 - agents see only the request socket;
 - gate is not on profile networks;
 - loopback, HTTPS-proxy, and verified-Tailscale listener/public-origin tuples
-  work, while arbitrary LAN/WAN binds, mismatched HTTP origins, and misleading
-  HTTPS-public-URL configurations fail closed;
+  work, including a MagicDNS hostname resolving only to the bound Tailscale IP,
+  while arbitrary LAN/WAN binds, mismatched origins, and misleading HTTPS public
+  URLs fail closed;
 - multiple profiles use one gate;
 - startup and pre-execution checks reject empty, locked, multi-key, or
   fingerprint-mismatched SSH agents, and changed SSH/config fingerprints recreate

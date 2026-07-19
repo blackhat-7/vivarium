@@ -7,7 +7,9 @@ import fcntl
 import ipaddress
 import logging
 import os
+import re
 import signal
+import socket
 import stat
 import threading
 from pathlib import Path
@@ -23,6 +25,9 @@ SCRATCH_DIR = Path("/var/tmp/vivarium-external-gate")
 SSH_SOCKET = Path("/run/vivarium-external-gate-ssh/agent.sock")
 KNOWN_HOSTS = Path(__file__).with_name("github_known_hosts")
 APPROVAL_PORT = 7843
+DNS_NAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?=.*[a-z])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
+)
 CONFIG_KEYS = {
     "EXTERNAL_GATE_ENABLE",
     "EXTERNAL_GATE_APPROVAL_PASSWORD",
@@ -85,8 +90,34 @@ def validate_transport(values: dict[str, str]) -> str:
             raise ValueError("Tailscale bind must be an IPv4 literal") from error
         if address.version != 4 or address.is_loopback or address.is_unspecified:
             raise ValueError("Tailscale bind must be one non-loopback IPv4 address")
-        if parsed.scheme != "http" or parsed.hostname != bind or port != APPROVAL_PORT:
+        if parsed.scheme != "http" or port != APPROVAL_PORT:
             raise ValueError("Tailscale listener and public origin must match")
+        public_host = parsed.hostname
+        if public != f"http://{public_host}:{APPROVAL_PORT}":
+            raise ValueError("Tailscale public origin must be canonical")
+        try:
+            public_address = ipaddress.ip_address(public_host)
+        except ValueError:
+            try:
+                socket.inet_aton(public_host)
+            except OSError:
+                pass
+            else:
+                raise ValueError("noncanonical Tailscale IP spelling is not allowed")
+            if DNS_NAME_RE.fullmatch(public_host) is None:
+                raise ValueError("invalid Tailscale MagicDNS hostname")
+            try:
+                resolved = {
+                    item[4][0]
+                    for item in socket.getaddrinfo(public_host, None, socket.AF_INET, socket.SOCK_STREAM)
+                }
+            except socket.gaierror as error:
+                raise ValueError("Tailscale MagicDNS hostname could not be resolved") from error
+            if resolved != {str(address)}:
+                raise ValueError("Tailscale MagicDNS hostname must resolve exclusively to its listener")
+        else:
+            if public_address != address:
+                raise ValueError("Tailscale public IP must match its listener")
     else:
         raise ValueError("invalid approval mode")
     password = values["EXTERNAL_GATE_APPROVAL_PASSWORD"]
