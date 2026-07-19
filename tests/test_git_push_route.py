@@ -1,16 +1,19 @@
 import errno
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from external_gate.gate import ActionResult
+from external_gate.diff_viewer import MAX_FILE_BYTES, MAX_FILE_LINES, load_preview, render_preview
+from external_gate.gate import ActionResult, FrozenSubmission, Gate, GateConfig
 from external_gate.git_push import (
     AgentValidator,
     GitPushAction,
     GitPushRoute,
+    NameStatusCollector,
     ProcessResult,
     ProcessRunner,
     RouteFailure,
@@ -97,6 +100,24 @@ class GitPushRouteTests(unittest.TestCase):
         self.assertIn("\\u202E", preview)
         self.assertIn("\\u2066", preview)
 
+    def test_name_status_stream_retains_three_hundred_and_counts_the_rest(self):
+        payload = b"".join(f"M\0file-{index}\0".encode() for index in range(305))
+        collector = NameStatusCollector()
+        for index in range(0, len(payload), 7):
+            collector(payload[index : index + 7])
+        changed, extra = collector.finish()
+        self.assertEqual((len(changed), extra), (300, 5))
+        self.assertEqual((changed[0].path, changed[-1].path), ("file-0", "file-299"))
+
+        rename = NameStatusCollector()
+        rename(b"R100\0old\0new\0")
+        changed, extra = rename.finish()
+        self.assertEqual((changed[0].status, changed[0].old_path, changed[0].path, extra), ("renamed", "old", "new", 0))
+        with self.assertRaises(ValueError):
+            invalid = NameStatusCollector()
+            invalid(b"M\0unterminated")
+            invalid.finish()
+
     def test_authoritative_validation(self):
         validate_fields("work", "owner-1", "repo.name", "refs/heads/feature/x", ZERO_OID, "1" * 40)
         invalid = [
@@ -119,18 +140,21 @@ class GitPushRouteTests(unittest.TestCase):
             ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
         ).strip()
         headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, ZERO_OID, new_oid]))
-        frozen = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        submission = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        self.assertIsInstance(submission, FrozenSubmission)
         self.assertEqual(
-            set(frozen),
+            set(submission.action),
             {
                 "profile", "owner", "repo", "ref", "old_oid", "new_oid", "commit_count",
-                "commits", "diff_stat", "diff", "diff_truncated",
+                "commits", "diff_stat",
             },
         )
-        action = self.route.decode(frozen)
+        action = self.route.decode(submission.action)
         self.assertEqual(action.new_oid, new_oid)
         self.assertEqual(action.commit_count, 1)
-        self.assertIn("+one", action.diff)
+        self.assertTrue(action.sidecar_preview)
+        preview = load_preview(submission.preview.data)
+        self.assertIn("+one", preview.files[0].patch)
         description = self.route.describe(action)
         self.assertEqual(
             [label for label, _value in description[:4]],
@@ -138,7 +162,45 @@ class GitPushRouteTests(unittest.TestCase):
         )
         self.assertEqual(description[0], ("Repository", "example/repo"))
         sections = self.route.approval_sections(action)
-        self.assertEqual([section.kind for section in sections], ["diff", "code"])
+        self.assertEqual([section.kind for section in sections], ["code"])
+        self.assertEqual(self.route.approval_diff(action).title, "Changes in this push")
+
+    def test_gate_submission_persists_git_sidecar_with_multiline_stat(self):
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        bundle_path = self.bundle()
+        body = bundle_path.read_bytes()
+        offset = 0
+
+        def read(amount):
+            nonlocal offset
+            chunk = body[offset : offset + amount]
+            offset += len(chunk)
+            return chunk
+
+        gate = Gate(
+            GateConfig(
+                state_dir=self.root / "state",
+                socket_path=self.root / "socket" / "gate.sock",
+                public_origin="http://127.0.0.1:7843",
+                password="a" * 32,
+            ),
+            {self.route.name: self.route},
+            fatal_exit=lambda: None,
+        )
+        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, ZERO_OID, new_oid]))
+        request_id = gate.submit(
+            self.route.name,
+            headers,
+            len(body),
+            read,
+            gate.monotonic() + 10,
+        )["id"]
+        record, _fields, _sections, approval_diff, preview_data = gate.approval_fields(request_id)
+        self.assertEqual(record["preview"]["kind"], "diff.v1")
+        self.assertIsNotNone(approval_diff)
+        self.assertIsNotNone(preview_data)
 
     def test_decode_preserves_existing_v1_actions_without_a_preview(self):
         new_oid = subprocess.check_output(
@@ -157,16 +219,93 @@ class GitPushRouteTests(unittest.TestCase):
         self.assertEqual(description[2], ("Change", "Preview unavailable"))
         self.assertEqual([label for label, _value in description[4:]], ["Expected old commit", "Approved new commit"])
 
-    def test_diff_preview_is_bounded_and_marks_truncation(self):
+    def test_decode_preserves_existing_inline_preview_actions(self):
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        frozen = {
+            "profile": "work",
+            "owner": "example",
+            "repo": "repo",
+            "ref": self.ref,
+            "old_oid": ZERO_OID,
+            "new_oid": new_oid,
+            "commit_count": 1,
+            "commits": "abc1234\tone",
+            "diff_stat": "1 file changed",
+            "diff": "@@ -0,0 +1 @@\n+one",
+            "diff_truncated": False,
+        }
+        action = self.route.decode(frozen)
+        self.assertFalse(action.sidecar_preview)
+        self.assertEqual([section.kind for section in self.route.approval_sections(action)], ["diff", "code"])
+        self.assertIsNone(self.route.approval_diff(action))
+
+    def test_oversized_file_is_omitted_without_hiding_a_later_file(self):
         old_oid = subprocess.check_output(
             ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
         ).strip()
-        new_oid = self.commit("x" * 6_000 + "\n")
+        (self.source / "file").write_text("x" * (MAX_FILE_BYTES + 100) + "\n")
+        (self.source / "many-lines.txt").write_text("line\n" * (MAX_FILE_LINES + 1))
+        (self.source / "later.txt").write_text("still visible\n")
+        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "large and small"], check=True)
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
         headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, old_oid, new_oid]))
-        frozen = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
-        self.assertTrue(frozen["diff_truncated"])
-        self.assertLessEqual(len(frozen["diff"].encode()), 2_400)
-        self.assertLessEqual(len(frozen["diff"].splitlines()), 120)
+        submission = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        preview = load_preview(submission.preview.data)
+        by_path = {file.path: file for file in preview.files}
+        self.assertEqual(by_path["file"].omission_reason, "per_file_bytes")
+        self.assertGreater(by_path["file"].additions + by_path["file"].deletions, 0)
+        self.assertEqual(by_path["many-lines.txt"].omission_reason, "per_file_lines")
+        self.assertGreater(by_path["many-lines.txt"].additions, MAX_FILE_LINES)
+        self.assertIn("still visible", by_path["later.txt"].patch)
+        rendered = render_preview(preview, file="file", html_budget=4_000)
+        self.assertIn("per-file 500 KiB limit exceeded", rendered)
+
+    def test_preview_preserves_renames_and_safely_renders_hostile_paths(self):
+        old_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        subprocess.run(["git", "-C", str(self.source), "mv", "file", "renamed file"], check=True)
+        hostile_name = '<script>\u202e\nname.txt'
+        (self.source / hostile_name).write_text("hostile path\n")
+        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "rename and hostile path"], check=True)
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, old_oid, new_oid]))
+        submission = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        preview = load_preview(submission.preview.data)
+        renamed = next(file for file in preview.files if file.path == "renamed file")
+        self.assertEqual((renamed.status, renamed.old_path), ("renamed", "file"))
+        self.assertIn("rename from file", renamed.patch)
+        hostile = next(file for file in preview.files if file.path.startswith("<script>"))
+        self.assertNotIn("\u202e", hostile.path)
+        self.assertNotIn("\n", hostile.path)
+        rendered = render_preview(preview, file=hostile.path, html_budget=6_000)
+        self.assertNotIn("<script>", rendered)
+        self.assertIn("&lt;script&gt;", rendered)
+
+    def test_git_route_represents_copied_content_as_a_created_file(self):
+        old_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        shutil.copyfile(self.source / "file", self.source / "copied")
+        subprocess.run(["git", "-C", str(self.source), "add", "copied"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "copy"], check=True)
+        new_oid = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True
+        ).strip()
+        headers = dict(zip(self.route.metadata_headers, ["work", "example", "repo", self.ref, old_oid, new_oid]))
+        submission = self.route.freeze(headers, self.bundle(), "a" * 64, 10)
+        copied = next(file for file in load_preview(submission.preview.data).files if file.path == "copied")
+        self.assertEqual(copied.status, "created")
+        self.assertIsNone(copied.old_path)
+        self.assertIn("new file mode", copied.patch)
 
     def test_freeze_rejects_non_fast_forward_history_before_approval(self):
         old_oid = subprocess.check_output(

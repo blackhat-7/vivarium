@@ -20,10 +20,16 @@ mandatory. The only production route is
 `git.push-branch.v1`. A bounded durable file store, one worker, and explicit
 `Executing`/`Uncertain` reconciliation prevent automatic write retries. Pending
 approval expires after 24 hours; unresolved uncertainty is abandoned after a
-further 24 hours. The generic approval page renders only bounded typed sections,
-auto-refreshes active execution states without JavaScript, and shows a locally
-validated, escaped unified-diff preview for Git pushes. A nonce-scoped poller
-reloads active pages only when their durable state changes. Gate startup fingerprints
+further 24 hours. The generic approval page renders only bounded typed sections.
+Its reusable `external_gate/diff_viewer.py` module validates immutable canonical
+JSON diff artifacts and renders escaped per-file, paginated side-by-side diffs
+with bounded intra-line highlights. Git preview content is limited to 1 MiB and
+20,000 lines overall, 500 KiB and 20,000 lines per file, and 300 listed files;
+oversized and binary files retain explicit summaries while other files remain
+reviewable. Pending preview sidecars are digest-bound to request metadata and
+removed when a decision is recorded. Existing schema-v1 requests remain
+readable. A nonce-scoped poller reloads active pages only when their durable
+state changes. Gate startup fingerprints
 the exact built image so source-only rebuilds recreate a stale container. The
 gate is disabled by default.
 

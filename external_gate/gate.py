@@ -22,9 +22,12 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
-SCHEMA_VERSION = 1
+from .diff_viewer import MAX_ARTIFACT_BYTES, load_preview, render_preview
+
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 MAX_OPEN_REQUESTS = 20
 MAX_OPEN_BODY_BYTES = 500 * 1024 * 1024
 MAX_RECORD_BYTES = 16 * 1024
@@ -41,6 +44,8 @@ MAX_SECTION_CONTENT_BYTES = 3_000
 MAX_APPROVAL_PRESENTATION_BYTES = 3_600
 MAX_RENDERED_DIFF_LINES = 120
 MAX_PAGE_BYTES = 32 * 1024
+MAX_DIFF_FRAGMENT_BYTES = 12 * 1024
+MAX_PREVIEW_ARTIFACT_BYTES = MAX_ARTIFACT_BYTES
 MAX_FORM_BYTES = 4 * 1024
 MAX_TERMINAL_RECORDS = 1_000
 UPLOAD_DEADLINE_SECONDS = 120.0
@@ -57,6 +62,7 @@ OPEN_STATES = frozenset({"pending", "approved", "executing", "uncertain"})
 TERMINAL_STATES = frozenset({"succeeded", "failed", "denied", "expired", "abandoned"})
 BODY_DELETE_STATES = TERMINAL_STATES | {"uncertain"}
 ALL_STATES = OPEN_STATES | TERMINAL_STATES
+PREVIEW_DELETE_STATES = ALL_STATES - {"pending"}
 
 LOG = logging.getLogger("external_gate")
 
@@ -90,6 +96,24 @@ class ApprovalSection:
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class PreviewPayload:
+    kind: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class FrozenSubmission:
+    action: object
+    preview: PreviewPayload | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalDiff:
+    title: str
+    summary: str = ""
+
+
 class ActionRoute:
     """Small reviewed interface implemented by every production action."""
 
@@ -110,6 +134,9 @@ class ActionRoute:
 
     def approval_sections(self, action) -> list[ApprovalSection]:
         return []
+
+    def approval_diff(self, action) -> ApprovalDiff | None:
+        return None
 
     def execute(self, action, body_path: Path) -> ActionResult:
         raise NotImplementedError
@@ -208,21 +235,47 @@ class Gate:
         return self.requests_dir / request_id
 
     def _validate_record(self, value, expected_id: str | None = None) -> dict:
-        keys = {
+        base_keys = {
             "schema_version", "id", "route", "action", "body_size", "body_sha256",
             "state", "created_at", "decision_deadline", "state_changed_at",
             "approved_at", "result",
         }
-        if not isinstance(value, dict) or set(value) != keys:
+        if not isinstance(value, dict):
             raise ValueError("invalid request envelope")
-        if value["schema_version"] != SCHEMA_VERSION:
+        version = value.get("schema_version")
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version not in (LEGACY_SCHEMA_VERSION, SCHEMA_VERSION)
+        ):
             raise ValueError("unsupported request schema")
+        expected_keys = base_keys if version == LEGACY_SCHEMA_VERSION else base_keys | {"preview"}
+        if set(value) != expected_keys:
+            raise ValueError("invalid request envelope")
+        if version == SCHEMA_VERSION:
+            preview = value["preview"]
+            if preview is not None:
+                if not isinstance(preview, dict) or set(preview) != {"kind", "size", "sha256"}:
+                    raise ValueError("invalid approval preview")
+                if preview["kind"] != "diff.v1":
+                    raise ValueError("unsupported approval preview")
+                if (
+                    not isinstance(preview["size"], int)
+                    or isinstance(preview["size"], bool)
+                    or not 0 < preview["size"] <= MAX_PREVIEW_ARTIFACT_BYTES
+                    or not isinstance(preview["sha256"], str)
+                    or re.fullmatch(r"[0-9a-f]{64}", preview["sha256"]) is None
+                ):
+                    raise ValueError("invalid approval preview")
         request_id = value["id"]
         if not isinstance(request_id, str) or not REQUEST_ID_RE.fullmatch(request_id) or (expected_id and request_id != expected_id):
             raise ValueError("invalid request id")
-        if value["route"] not in self.routes:
+        if not isinstance(value["route"], str) or value["route"] not in self.routes:
             raise ValueError("invalid route envelope")
-        action_bytes = canonical_json(value["action"])
+        try:
+            action_bytes = canonical_json(value["action"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("invalid frozen action") from error
         if len(action_bytes) > MAX_ACTION_BYTES:
             raise ValueError("frozen action is too large")
         if not isinstance(value["body_size"], int) or isinstance(value["body_size"], bool) or value["body_size"] <= 0:
@@ -230,7 +283,7 @@ class Gate:
         digest = value["body_sha256"]
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("invalid body digest")
-        if value["state"] not in ALL_STATES:
+        if not isinstance(value["state"], str) or value["state"] not in ALL_STATES:
             raise ValueError("invalid state")
         for field in ("created_at", "decision_deadline", "state_changed_at"):
             if not isinstance(value[field], (int, float)) or isinstance(value[field], bool):
@@ -246,7 +299,11 @@ class Gate:
             raise ValueError("invalid result code")
         if not isinstance(result["message"], str) or len(result["message"].encode("utf-8")) > MAX_RESULT_BYTES:
             raise ValueError("invalid result message")
-        if len(canonical_json(value)) > MAX_RECORD_BYTES:
+        try:
+            record_size = len(canonical_json(value))
+        except (TypeError, ValueError) as error:
+            raise ValueError("invalid request metadata") from error
+        if record_size > MAX_RECORD_BYTES:
             raise ValueError("request metadata is too large")
         return value
 
@@ -293,6 +350,47 @@ class Gate:
             return
         fsync_dir(request_dir)
 
+    def _delete_preview(self, request_id: str) -> None:
+        request_dir = self.request_path(request_id)
+        preview = request_dir / "preview"
+        try:
+            preview.unlink()
+        except FileNotFoundError:
+            return
+        fsync_dir(request_dir)
+
+    def _load_preview(self, record: dict) -> bytes | None:
+        metadata = record.get("preview")
+        if metadata is None or record["state"] != "pending":
+            return None
+        path = self.request_path(record["id"]) / "preview"
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_nlink != 1
+                or stat.S_IMODE(details.st_mode) != 0o600
+                or details.st_size != metadata["size"]
+                or details.st_size > MAX_PREVIEW_ARTIFACT_BYTES
+            ):
+                raise ValueError("invalid approval preview file")
+            chunks: list[bytes] = []
+            remaining = details.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("short approval preview file")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+        if hashlib.sha256(data).hexdigest() != metadata["sha256"]:
+            raise ValueError("approval preview digest mismatch")
+        load_preview(data)
+        return data
+
     def _log_transition(self, record: dict, old: str, new: str, code: str) -> None:
         LOG.info("transition id=%s route=%s old=%s new=%s code=%s", record["id"], record["route"], old, new, code)
 
@@ -327,6 +425,8 @@ class Gate:
                 self._write_record(record)
                 if new_state in BODY_DELETE_STATES:
                     self._delete_body(request_id)
+                if new_state in PREVIEW_DELETE_STATES:
+                    self._delete_preview(request_id)
             except OSError:
                 self._fatal_storage_failure()
                 raise
@@ -395,6 +495,26 @@ class Gate:
             checked.append(section)
         return checked
 
+    def _validate_approval_diff(self, route: ActionRoute, action) -> ApprovalDiff | None:
+        preview = route.approval_diff(action)
+        if preview is None:
+            return None
+        if not isinstance(preview, ApprovalDiff):
+            raise ValueError("invalid approval diff")
+        for value, limit, multiline in (
+            (preview.title, MAX_SECTION_TITLE_BYTES, False),
+            (preview.summary, MAX_SECTION_SUMMARY_BYTES, True),
+        ):
+            allowed_controls = {"\t", "\n"} if multiline else {"\t"}
+            if (
+                not isinstance(value, str)
+                or len(value.encode("utf-8")) > limit
+                or any(ord(char) < 32 and char not in allowed_controls for char in value)
+                or BIDI_CONTROL_RE.search(value) is not None
+            ):
+                raise ValueError("invalid approval diff text")
+        return preview
+
     def _decode(self, record: dict):
         route = self.routes[record["route"]]
         try:
@@ -445,6 +565,8 @@ class Gate:
             for record in records:
                 if record["state"] in BODY_DELETE_STATES:
                     self._delete_body(record["id"])
+                if record["state"] in PREVIEW_DELETE_STATES:
+                    self._delete_preview(record["id"])
                 decoded = self._decode(record)
                 if decoded is None:
                     continue
@@ -531,13 +653,46 @@ class Gate:
             finally:
                 os.close(descriptor)
             try:
-                frozen = route.freeze(metadata, body_path, digest.hexdigest(), size)
+                frozen_result = route.freeze(metadata, body_path, digest.hexdigest(), size)
+                if isinstance(frozen_result, FrozenSubmission):
+                    frozen = frozen_result.action
+                    preview_payload = frozen_result.preview
+                else:
+                    frozen = frozen_result
+                    preview_payload = None
                 action_data = canonical_json(frozen)
                 if len(action_data) > MAX_ACTION_BYTES:
                     raise GateError(413, "action_size", "frozen action is too large")
                 action = route.decode(frozen)
                 self._validate_description(route, action)
                 self._validate_sections(route, action)
+                approval_diff = self._validate_approval_diff(route, action)
+                if (preview_payload is None) != (approval_diff is None):
+                    raise ValueError("approval diff and payload do not match")
+                preview_metadata = None
+                if preview_payload is not None:
+                    if (
+                        not isinstance(preview_payload, PreviewPayload)
+                        or preview_payload.kind != "diff.v1"
+                        or not isinstance(preview_payload.data, bytes)
+                        or not 0 < len(preview_payload.data) <= MAX_PREVIEW_ARTIFACT_BYTES
+                    ):
+                        raise ValueError("invalid approval preview payload")
+                    load_preview(preview_payload.data)
+                    preview_path = temp_dir / "preview"
+                    preview_fd = os.open(preview_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    try:
+                        with os.fdopen(preview_fd, "wb", closefd=False) as preview_file:
+                            preview_file.write(preview_payload.data)
+                            preview_file.flush()
+                            os.fsync(preview_file.fileno())
+                    finally:
+                        os.close(preview_fd)
+                    preview_metadata = {
+                        "kind": preview_payload.kind,
+                        "size": len(preview_payload.data),
+                        "sha256": hashlib.sha256(preview_payload.data).hexdigest(),
+                    }
             except GateError:
                 raise
             except (OSError, ValueError) as error:
@@ -548,6 +703,7 @@ class Gate:
                 "id": request_id,
                 "route": route_name,
                 "action": frozen,
+                "preview": preview_metadata,
                 "body_size": size,
                 "body_sha256": digest.hexdigest(),
                 "state": "pending",
@@ -642,7 +798,7 @@ class Gate:
 
     def approval_fields(
         self, request_id: str
-    ) -> tuple[dict, list[tuple[str, str]], list[ApprovalSection]] | None:
+    ) -> tuple[dict, list[tuple[str, str]], list[ApprovalSection], ApprovalDiff | None, bytes | None] | None:
         with self.condition:
             try:
                 record = self.load(request_id)
@@ -658,12 +814,20 @@ class Gate:
             try:
                 fields = self._validate_description(route, action)
                 sections = self._validate_sections(route, action)
+                approval_diff = self._validate_approval_diff(route, action)
+                if record["state"] == "pending" and (record.get("preview") is None) != (approval_diff is None):
+                    raise ValueError("stored approval preview does not match its action")
             except ValueError:
                 if record["state"] not in TERMINAL_STATES:
                     target = "failed" if record["state"] in {"pending", "approved"} else "abandoned"
                     self.transition(request_id, record["state"], target, "invalid_description", "route description is invalid")
                 return None
-            return record, fields, sections
+            try:
+                preview_data = self._load_preview(record)
+            except (OSError, ValueError):
+                self._fatal_storage_failure()
+                return None
+            return record, fields, sections, approval_diff, preview_data
 
     def _hash_body(self, path: Path) -> str:
         digest = hashlib.sha256()
@@ -986,20 +1150,25 @@ class BrowserHandler(BoundedHandler):
         return False
 
     def do_GET(self):
-        if self.path == "/healthz":
+        target = urlsplit(self.path)
+        path = target.path
+        if path == "/healthz" and not target.query:
             self.json_response(200 if self.gate.healthy() else 503, {"status": "ok" if self.gate.healthy() else "unhealthy"})
             return
         if not self.require_auth():
             return
-        status_match = re.fullmatch(r"/r/([0-9a-f]{32})/status", self.path)
+        status_match = re.fullmatch(r"/r/([0-9a-f]{32})/status", path)
         if status_match:
+            if target.query:
+                self.fixed_error(GateError(400, "query", "status endpoint does not accept a query"))
+                return
             status = self.gate.status(status_match.group(1))
             if status is None:
                 self.fixed_error(GateError(404, "not_found", "request not found"))
                 return
             self.json_response(200, status)
             return
-        match = re.fullmatch(r"/r/([0-9a-f]{32})", self.path)
+        match = re.fullmatch(r"/r/([0-9a-f]{32})", path)
         if not match:
             self.fixed_error(GateError(404, "not_found", "request not found"))
             return
@@ -1007,10 +1176,24 @@ class BrowserHandler(BoundedHandler):
         if loaded is None:
             self.fixed_error(GateError(404, "not_found", "request not found"))
             return
-        record, fields, sections = loaded
+        record, fields, sections, approval_diff, preview_data = loaded
+        if target.query and preview_data is None:
+            self.fixed_error(GateError(400, "query", "this request has no selectable diff preview"))
+            return
+        diff_fragment = ""
+        if preview_data is not None and approval_diff is not None:
+            try:
+                diff_fragment = render_preview(
+                    preview_data,
+                    query=target.query or None,
+                    html_budget=MAX_DIFF_FRAGMENT_BYTES,
+                )
+            except ValueError:
+                self.fixed_error(GateError(400, "query", "invalid diff preview selection"))
+                return
         if record["state"] in {"approved", "executing"}:
             self.csp_nonce = secrets.token_urlsafe(18)
-        body = self.render_page(record, fields, sections)
+        body = self.render_page(record, fields, sections, approval_diff=approval_diff, diff_fragment=diff_fragment)
         if len(body) > MAX_PAGE_BYTES:
             body = self.render_page(record, fields, [], previews_omitted=True)
         if len(body) > MAX_PAGE_BYTES:
@@ -1155,6 +1338,8 @@ class BrowserHandler(BoundedHandler):
         fields: list[tuple[str, str]],
         sections: list[ApprovalSection],
         *,
+        approval_diff: ApprovalDiff | None = None,
+        diff_fragment: str = "",
         previews_omitted: bool = False,
     ) -> bytes:
         state = record["state"]
@@ -1195,7 +1380,19 @@ class BrowserHandler(BoundedHandler):
             '<details class="technical-details"><summary><span class="technical-label">Technical details</span>'
             f'<span>{len(technical_fields)} fields</span></summary><dl class="technical-grid">{technical_details}</dl></details>'
         )
-        previews = "".join(self._render_section(section) for section in sections)
+        previews = ""
+        if approval_diff is not None and diff_fragment:
+            diff_summary = (
+                f'<p class="section-summary">{html.escape(approval_diff.summary)}</p>'
+                if approval_diff.summary
+                else ""
+            )
+            previews = (
+                '<section class="card preview-card preview-side-by-side"><div class="section-heading"><div>'
+                f'<p class="eyebrow">Review carefully</p><h2>{html.escape(approval_diff.title)}</h2>{diff_summary}'
+                f'</div></div>{diff_fragment}</section>'
+            )
+        previews += "".join(self._render_section(section) for section in sections)
         if previews_omitted:
             previews = (
                 '<section class="card preview-card"><p class="eyebrow">Request preview</p>'
@@ -1230,5 +1427,5 @@ class BrowserHandler(BoundedHandler):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} · Vivarium</title>
 <style>
 :root{{color-scheme:dark;--bg:#080a0f;--surface:#11151d;--surface-2:#171c26;--border:#293140;--border-soft:#202735;--text:#f4f7fb;--muted:#a6b1c0;--subtle:#98a5b7;--accent:#8ca6ff;--green:#48dda0;--red:#ff7180;--amber:#f4bd56;--blue:#6aabff;--violet:#b596ff;--orange:#ff9862;--radius:14px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
-*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -12rem,#202a4c 0,transparent 38rem),linear-gradient(180deg,#0b0e15 0,var(--bg) 40rem);color:var(--text);font-size:15px;line-height:1.55}}body:before{{content:"";position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(#fff1 1px,transparent 1px),linear-gradient(90deg,#fff1 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,#000,transparent 42%)}}.shell{{position:relative;width:min(calc(100% - 28px),1180px);margin:0 auto;padding:24px 0 40px}}.brand{{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.02em}}.brand-mark{{display:grid;place-items:center;width:22px;height:22px;border:1px solid #ffffff24;border-radius:7px;background:linear-gradient(145deg,#b9c7ff,#738cff);color:#10131b;font-size:10px;font-weight:900;box-shadow:0 6px 22px #7088ff3a}}.brand strong{{color:var(--text)}}.brand-divider{{width:1px;height:15px;background:var(--border)}}.hero{{padding:24px 0 14px}}.hero-top{{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}}.eyebrow{{margin:0 0 8px;color:var(--muted);font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}}h1{{max-width:24ch;margin:0;font-size:clamp(28px,4vw,42px);font-weight:760;letter-spacing:-.045em;line-height:1.05}}.hero-copy{{max-width:720px;margin:10px 0 0;color:#b6c0ce;font-size:14px}}.state-pill{{display:inline-flex;align-items:center;gap:8px;flex:none;margin-top:1px;padding:6px 10px;border:1px solid currentColor;border-radius:999px;background:#11151dcc;font-size:11px;font-weight:850;letter-spacing:.08em;text-transform:uppercase;box-shadow:0 10px 32px #0005}}.state-dot{{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor}}.state-pending{{color:var(--amber)}}.state-approved{{color:var(--blue)}}.state-executing{{color:var(--violet)}}.state-succeeded{{color:var(--green)}}.state-failed,.state-denied{{color:var(--red)}}.state-uncertain{{color:var(--orange)}}.state-expired,.state-abandoned{{color:var(--muted)}}.refresh-hint{{display:flex;align-items:center;gap:7px;margin:10px 0 0;color:var(--muted);font-size:13px}}.spinner{{width:13px;height:13px;border:2px solid #ffffff30;border-top-color:var(--violet);border-radius:50%;animation:spin .9s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}.card{{margin-top:12px;padding:16px;background:linear-gradient(145deg,#141923f2,#0f131bf2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 36px #0003,0 1px 0 #ffffff08 inset}}.card h2{{margin:0;font-size:18px;letter-spacing:-.02em}}.summary-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:0;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--border)}}.summary-item{{min-width:0;padding:11px 13px;background:var(--surface)}}.technical-details{{margin-top:8px;border:1px solid var(--border-soft);border-radius:10px;background:#0d1118}}.technical-details>summary{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 12px;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;list-style:none}}.technical-details>summary::-webkit-details-marker{{display:none}}.technical-details>summary span:not(.technical-label){{color:var(--subtle);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em}}.technical-label:before{{content:"›";display:inline-block;margin-right:7px;color:var(--accent);transition:transform .15s ease}}.technical-details[open] .technical-label:before{{transform:rotate(90deg)}}.technical-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;padding:0 8px 8px}}.technical-item{{min-width:0;padding:9px 10px;background:var(--surface);border-radius:7px}}dt{{color:var(--subtle);font-size:9px;font-weight:800;letter-spacing:.09em;text-transform:uppercase}}dd{{margin:4px 0 0;overflow-wrap:anywhere;color:#dce3ec;font-weight:600}}code,pre{{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}}dd code{{font-size:11.5px}}.section-heading{{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:11px}}.section-summary{{max-width:700px;margin:7px 0 0;color:var(--muted);font:12px/1.55 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap}}.preview-note{{flex:none;padding:5px 8px;border:1px solid #765b2a;border-radius:999px;color:#efc777;background:#332813;font-size:10px;font-weight:800;text-transform:uppercase}}.code-block,.text-preview{{max-height:180px;margin:0;padding:11px 12px;overflow:auto;border:1px solid var(--border-soft);border-radius:12px;background:#090c12;color:#cdd6e3;font-size:11.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}}.text-preview{{font-family:inherit}}.diff-scroll{{overflow:auto;border:1px solid var(--border-soft);border-radius:12px;background:#090c12}}.diff-table{{width:100%;border-collapse:collapse;font:11.5px/1.5 "SFMono-Regular",Consolas,monospace;white-space:pre}}.diff-table td{{padding-top:1px;padding-bottom:1px}}.line-number{{width:1%;min-width:40px;padding:0 7px;color:#8d9aac;text-align:right;vertical-align:top;user-select:none;border-right:1px solid #ffffff0c}}.diff-code{{padding:0 10px;color:#cbd4e1}}.diff-table .addition{{background:#17362699}}.diff-table .addition .diff-code{{color:#b7f5d1}}.diff-table .deletion{{background:#45212999}}.diff-table .deletion .diff-code{{color:#ffc0c7}}.diff-table .hunk{{background:#172b46}}.diff-table .hunk .diff-code{{color:#8fc2ff}}.diff-table .file{{background:#171c27}}.diff-table .file .diff-code{{padding-top:8px;color:#d6c2ff;font-weight:700}}.diff-table .meta .diff-code{{color:#7f8da0}}.empty-preview{{display:grid;place-items:center;min-height:74px;border:1px dashed #344052;border-radius:12px;color:var(--muted);background:#0a0d13}}.preview-code,.preview-text{{padding:13px 14px}}.preview-code .section-heading,.preview-text .section-heading{{margin-bottom:8px}}.decision-card{{display:flex;align-items:center;justify-content:space-between;gap:24px;border-color:#46577d;background:linear-gradient(145deg,#182034f2,#111725f2)}}.decision-copy{{max-width:650px;margin:8px 0 0;color:var(--muted)}}.actions{{display:flex;flex:none;flex-wrap:wrap;gap:9px;margin:0}}form{{margin:0}}button{{display:flex;align-items:flex-start;flex-direction:column;gap:2px;min-width:164px;min-height:48px;padding:8px 13px;border:1px solid transparent;border-radius:12px;font:inherit;cursor:pointer;transition:transform .15s ease,filter .15s ease,border-color .15s ease}}button span{{font-size:14px;font-weight:800}}button small{{font-size:11px;opacity:.7}}button:hover{{transform:translateY(-1px);filter:brightness(1.08)}}button:active{{transform:translateY(0)}}button:focus-visible{{outline:3px solid #9db2ff;outline-offset:3px}}.approve{{background:linear-gradient(135deg,#f6f8fc,#cfd8e8);color:#10131a;box-shadow:0 8px 24px #dbe5ff25}}.deny{{border-color:#663540;background:#28161b;color:#ffadb6}}.result-card{{position:relative;overflow:hidden}}.result-card:before{{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--muted)}}.result-succeeded:before{{background:var(--green)}}.result-failed:before,.result-denied:before{{background:var(--red)}}.result-uncertain:before{{background:var(--orange)}}.result-executing:before{{background:var(--violet)}}.result-message{{margin:6px 0 0;color:#c3ccd9;font-size:14px}}.result-meta{{display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--subtle);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}.result-meta code{{padding:4px 7px;border-radius:6px;background:#090c12;color:#aeb9c9;text-transform:none;letter-spacing:0}}.visually-hidden{{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}}.footer{{display:flex;justify-content:space-between;gap:20px;margin-top:22px;padding:0 4px;color:#8c98a9;font-size:11px}}@media(max-width:760px){{.shell{{width:min(calc(100% - 16px),1180px);padding-top:16px}}.hero{{padding-top:20px}}.hero-top{{display:block}}.state-pill{{margin-top:14px}}.summary-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}.technical-grid{{grid-template-columns:1fr}}.section-heading{{display:block}}.preview-note{{display:inline-flex;margin-top:8px}}.decision-card{{display:block}}.actions{{margin-top:14px}}.actions,.actions form,button{{width:100%}}button{{min-width:0}}.footer{{display:block}}}}@media(max-width:440px){{.summary-grid{{grid-template-columns:1fr}}}}@media(prefers-reduced-motion:reduce){{*{{scroll-behavior:auto!important;transition:none!important}}.spinner{{animation:none}}}}
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at 50% -12rem,#202a4c 0,transparent 38rem),linear-gradient(180deg,#0b0e15 0,var(--bg) 40rem);color:var(--text);font-size:15px;line-height:1.55}}body:before{{content:"";position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(#fff1 1px,transparent 1px),linear-gradient(90deg,#fff1 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,#000,transparent 42%)}}.shell{{position:relative;width:min(calc(100% - 28px),1180px);margin:0 auto;padding:24px 0 40px}}.brand{{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.02em}}.brand-mark{{display:grid;place-items:center;width:22px;height:22px;border:1px solid #ffffff24;border-radius:7px;background:linear-gradient(145deg,#b9c7ff,#738cff);color:#10131b;font-size:10px;font-weight:900;box-shadow:0 6px 22px #7088ff3a}}.brand strong{{color:var(--text)}}.brand-divider{{width:1px;height:15px;background:var(--border)}}.hero{{padding:24px 0 14px}}.hero-top{{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}}.eyebrow{{margin:0 0 8px;color:var(--muted);font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}}h1{{max-width:24ch;margin:0;font-size:clamp(28px,4vw,42px);font-weight:760;letter-spacing:-.045em;line-height:1.05}}.hero-copy{{max-width:720px;margin:10px 0 0;color:#b6c0ce;font-size:14px}}.state-pill{{display:inline-flex;align-items:center;gap:8px;flex:none;margin-top:1px;padding:6px 10px;border:1px solid currentColor;border-radius:999px;background:#11151dcc;font-size:11px;font-weight:850;letter-spacing:.08em;text-transform:uppercase;box-shadow:0 10px 32px #0005}}.state-dot{{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor}}.state-pending{{color:var(--amber)}}.state-approved{{color:var(--blue)}}.state-executing{{color:var(--violet)}}.state-succeeded{{color:var(--green)}}.state-failed,.state-denied{{color:var(--red)}}.state-uncertain{{color:var(--orange)}}.state-expired,.state-abandoned{{color:var(--muted)}}.refresh-hint{{display:flex;align-items:center;gap:7px;margin:10px 0 0;color:var(--muted);font-size:13px}}.spinner{{width:13px;height:13px;border:2px solid #ffffff30;border-top-color:var(--violet);border-radius:50%;animation:spin .9s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}.card{{margin-top:12px;padding:16px;background:linear-gradient(145deg,#141923f2,#0f131bf2);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 36px #0003,0 1px 0 #ffffff08 inset}}.card h2{{margin:0;font-size:18px;letter-spacing:-.02em}}.summary-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin:0;overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--border)}}.summary-item{{min-width:0;padding:11px 13px;background:var(--surface)}}.technical-details{{margin-top:8px;border:1px solid var(--border-soft);border-radius:10px;background:#0d1118}}.technical-details>summary{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 12px;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;list-style:none}}.technical-details>summary::-webkit-details-marker{{display:none}}.technical-details>summary span:not(.technical-label){{color:var(--subtle);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em}}.technical-label:before{{content:"›";display:inline-block;margin-right:7px;color:var(--accent);transition:transform .15s ease}}.technical-details[open] .technical-label:before{{transform:rotate(90deg)}}.technical-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0;padding:0 8px 8px}}.technical-item{{min-width:0;padding:9px 10px;background:var(--surface);border-radius:7px}}dt{{color:var(--subtle);font-size:9px;font-weight:800;letter-spacing:.09em;text-transform:uppercase}}dd{{margin:4px 0 0;overflow-wrap:anywhere;color:#dce3ec;font-weight:600}}code,pre{{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}}dd code{{font-size:11.5px}}.section-heading{{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:11px}}.section-summary{{max-width:700px;margin:7px 0 0;color:var(--muted);font:12px/1.55 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap}}.preview-note{{flex:none;padding:5px 8px;border:1px solid #765b2a;border-radius:999px;color:#efc777;background:#332813;font-size:10px;font-weight:800;text-transform:uppercase}}.code-block,.text-preview{{max-height:180px;margin:0;padding:11px 12px;overflow:auto;border:1px solid var(--border-soft);border-radius:12px;background:#090c12;color:#cdd6e3;font-size:11.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}}.text-preview{{font-family:inherit}}.diff-scroll{{overflow:auto;border:1px solid var(--border-soft);border-radius:12px;background:#090c12}}.diff-table{{width:100%;border-collapse:collapse;font:11.5px/1.5 "SFMono-Regular",Consolas,monospace;white-space:pre}}.diff-table td{{padding-top:1px;padding-bottom:1px}}.line-number{{width:1%;min-width:40px;padding:0 7px;color:#8d9aac;text-align:right;vertical-align:top;user-select:none;border-right:1px solid #ffffff0c}}.diff-code{{padding:0 10px;color:#cbd4e1}}.diff-table .addition{{background:#17362699}}.diff-table .addition .diff-code{{color:#b7f5d1}}.diff-table .deletion{{background:#45212999}}.diff-table .deletion .diff-code{{color:#ffc0c7}}.diff-table .hunk{{background:#172b46}}.diff-table .hunk .diff-code{{color:#8fc2ff}}.diff-table .file{{background:#171c27}}.diff-table .file .diff-code{{padding-top:8px;color:#d6c2ff;font-weight:700}}.diff-table .meta .diff-code{{color:#7f8da0}}.trusted-diff-preview>header{{position:relative;margin-bottom:10px;padding:10px 12px;border:1px solid var(--border-soft);border-radius:10px;background:#0c1017}}.trusted-diff-preview h3{{margin:2px 0 0;font:650 13px/1.4 "SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}}.file-position{{margin:0;color:var(--subtle);font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}}.file-summary{{display:flex;gap:10px;margin:6px 0 0;color:var(--muted);font-size:11px}}.file-summary .status{{text-transform:capitalize}}.file-summary .additions{{color:var(--green)}}.file-summary .deletions{{color:var(--red)}}.old-path{{display:block;margin-top:3px;color:var(--subtle);font:11px/1.4 "SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere}}.file-nav,.page-nav{{display:flex;align-items:center;justify-content:flex-end;gap:12px}}.file-nav{{position:absolute;top:10px;right:12px}}.file-nav a,.page-nav a{{color:#aebfff;font-size:11px;font-weight:700;text-decoration:none}}.file-nav a:hover,.page-nav a:hover{{text-decoration:underline}}.page-nav{{justify-content:center;margin-top:9px;color:var(--subtle);font-size:10px}}.page-nav a:first-child{{margin-right:auto}}.page-nav a:last-child{{margin-left:auto}}.side-by-side-diff{{width:100%;min-width:760px;border-collapse:collapse;table-layout:fixed;font:11.5px/1.5 "SFMono-Regular",Consolas,monospace}}.side-by-side-diff th{{padding:5px 8px;color:var(--subtle);background:#111722;text-align:left;font-size:9px;text-transform:uppercase}}.side-by-side-diff th:nth-child(1),.side-by-side-diff th:nth-child(3){{width:48px}}.side-by-side-diff th:nth-child(2),.side-by-side-diff th:nth-child(4){{width:calc(50% - 48px)}}.side-by-side-diff td{{padding:1px 8px;vertical-align:top;border-top:1px solid #ffffff06}}.side-by-side-diff .old-number,.side-by-side-diff .new-number{{width:48px;padding-right:7px;color:#78869a;text-align:right;user-select:none}}.side-by-side-diff .old-code,.side-by-side-diff .new-code{{width:calc(50% - 48px);overflow-wrap:anywhere;white-space:pre-wrap}}.side-by-side-diff .old-code{{border-right:1px solid var(--border)}}.side-by-side-diff .changed .old-code,.side-by-side-diff .changed .old-number{{background:#42202799}}.side-by-side-diff .changed .new-code,.side-by-side-diff .changed .new-number{{background:#15362599}}.side-by-side-diff .addition .new-code,.side-by-side-diff .addition .new-number{{background:#15362599}}.side-by-side-diff .hunk td{{padding:4px 9px;background:#172b46;color:#8fc2ff}}.side-by-side-diff .file-meta td,.side-by-side-diff .no-newline td{{color:#8996a8;background:#10151e}}mark.intra-delete,mark.intra-add{{padding:0 1px;border-radius:2px;color:inherit}}mark.intra-delete{{background:#a33d4c99}}mark.intra-add{{background:#247a4caa}}.omission,.extra-files{{margin:9px 0 0;padding:8px 10px;border:1px solid #72562b;border-radius:8px;background:#2c2213;color:#f1ca7e;font-size:11px}}.line-omitted td{{color:var(--subtle);text-align:center;background:#10151e}}.empty-preview{{display:grid;place-items:center;min-height:74px;border:1px dashed #344052;border-radius:12px;color:var(--muted);background:#0a0d13}}.preview-code,.preview-text{{padding:13px 14px}}.preview-code .section-heading,.preview-text .section-heading{{margin-bottom:8px}}.decision-card{{display:flex;align-items:center;justify-content:space-between;gap:24px;border-color:#46577d;background:linear-gradient(145deg,#182034f2,#111725f2)}}.decision-copy{{max-width:650px;margin:8px 0 0;color:var(--muted)}}.actions{{display:flex;flex:none;flex-wrap:wrap;gap:9px;margin:0}}form{{margin:0}}button{{display:flex;align-items:flex-start;flex-direction:column;gap:2px;min-width:164px;min-height:48px;padding:8px 13px;border:1px solid transparent;border-radius:12px;font:inherit;cursor:pointer;transition:transform .15s ease,filter .15s ease,border-color .15s ease}}button span{{font-size:14px;font-weight:800}}button small{{font-size:11px;opacity:.7}}button:hover{{transform:translateY(-1px);filter:brightness(1.08)}}button:active{{transform:translateY(0)}}button:focus-visible{{outline:3px solid #9db2ff;outline-offset:3px}}.approve{{background:linear-gradient(135deg,#f6f8fc,#cfd8e8);color:#10131a;box-shadow:0 8px 24px #dbe5ff25}}.deny{{border-color:#663540;background:#28161b;color:#ffadb6}}.result-card{{position:relative;overflow:hidden}}.result-card:before{{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--muted)}}.result-succeeded:before{{background:var(--green)}}.result-failed:before,.result-denied:before{{background:var(--red)}}.result-uncertain:before{{background:var(--orange)}}.result-executing:before{{background:var(--violet)}}.result-message{{margin:6px 0 0;color:#c3ccd9;font-size:14px}}.result-meta{{display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--subtle);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}.result-meta code{{padding:4px 7px;border-radius:6px;background:#090c12;color:#aeb9c9;text-transform:none;letter-spacing:0}}.visually-hidden{{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}}.footer{{display:flex;justify-content:space-between;gap:20px;margin-top:22px;padding:0 4px;color:#8c98a9;font-size:11px}}@media(max-width:760px){{.shell{{width:min(calc(100% - 16px),1180px);padding-top:16px}}.hero{{padding-top:20px}}.hero-top{{display:block}}.state-pill{{margin-top:14px}}.summary-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}.technical-grid{{grid-template-columns:1fr}}.section-heading{{display:block}}.preview-note{{display:inline-flex;margin-top:8px}}.decision-card{{display:block}}.actions{{margin-top:14px}}.actions,.actions form,button{{width:100%}}button{{min-width:0}}.footer{{display:block}}}}@media(max-width:440px){{.summary-grid{{grid-template-columns:1fr}}}}@media(prefers-reduced-motion:reduce){{*{{scroll-behavior:auto!important;transition:none!important}}.spinner{{animation:none}}}}
 </style></head><body data-state="{state}"><main class="shell"><header class="brand"><span class="brand-mark">V</span><strong>Vivarium</strong><span class="brand-divider"></span><span>External Action Gate</span></header><section class="hero"><div class="hero-top"><div><p class="eyebrow">One-time external action</p><h1>{html.escape(title)}</h1><p class="hero-copy">{html.escape(state_copy[state])}</p>{auto_hint}</div><span class="state-pill state-{state}" role="status" aria-live="polite"><span class="state-dot"></span>{html.escape(state_label)}</span></div></section>{summary}{technical}{result}{previews}{decision}<footer class="footer"><span>Immutable request · bounded execution · one-shot approval</span><span>{html.escape(record["route"])}</span></footer></main>{poller}</body></html>'''.encode("utf-8")

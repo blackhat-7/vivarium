@@ -69,8 +69,10 @@ ssh-add -l                    # must show exactly one identity
 
 Vivarium does not create, load, or manage that agent. `vpush` submits the
 current branch and prints an authenticated browser link. The page shows the
-bounded commit list and highlighted diff, then follows execution to its durable
-result. One approval permits one exact branch-create or fast-forward attempt; it
+bounded commit list and a per-file side-by-side diff with intra-line highlights,
+then follows execution to its durable result. Oversized or binary files get an
+explicit placeholder without hiding other files. One approval permits one exact
+branch-create or fast-forward attempt; it
 never permits deletes, tags, arbitrary remotes, force updates, hooks, or Git LFS.
 
 Approval defaults to `http://127.0.0.1:7843`. The host-only

@@ -19,17 +19,21 @@ from unittest import mock
 from urllib.parse import urlencode
 
 import external_gate.gate as core
+from external_gate.diff_viewer import FilePatch, build_preview
 from external_gate.__main__ import CONFIG_KEYS, acquire_daemon_lock, read_config, validate_transport
 from external_gate.gate import (
     ActionResult,
     ActionRoute,
+    ApprovalDiff,
     ApprovalSection,
     AgentHandler,
     BrowserHTTPServer,
     BrowserHandler,
     Gate,
     GateConfig,
+    FrozenSubmission,
     GateError,
+    PreviewPayload,
     UnixHTTPServer,
 )
 
@@ -83,6 +87,23 @@ class FakeRoute(ActionRoute):
     def reconcile(self, _action):
         self.reconciliations += 1
         return self.reconcile_result
+
+
+class DiffRoute(FakeRoute):
+    name = "fake-diff.v1"
+
+    def freeze(self, metadata, body_path, digest, size):
+        action = super().freeze(metadata, body_path, digest, size)
+        artifact = build_preview(
+            [
+                FilePatch("first.txt", "diff --git a/first.txt b/first.txt\n--- a/first.txt\n+++ b/first.txt\n@@ -1 +1 @@\n-old word\n+new word\n"),
+                FilePatch("second.txt", "diff --git a/second.txt b/second.txt\n--- a/second.txt\n+++ b/second.txt\n@@ -0,0 +1 @@\n+second file\n"),
+            ]
+        )
+        return FrozenSubmission(action, PreviewPayload("diff.v1", artifact))
+
+    def approval_diff(self, _action):
+        return ApprovalDiff("Reusable diff", "2 files changed")
 
 
 class ExternalGateTests(unittest.TestCase):
@@ -154,6 +175,24 @@ class ExternalGateTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(self.route.executions, 1)
         self.assertFalse(body_path.exists())
+
+    def test_schema_one_request_remains_recoverable_after_upgrade(self):
+        request_id = self.submit()["id"]
+        record = self.gate.load(request_id)
+        record["schema_version"] = core.LEGACY_SCHEMA_VERSION
+        record.pop("preview")
+        request_file = self.gate.request_path(request_id) / "request.json"
+        request_file.write_bytes(core.canonical_json(record))
+        recovered = Gate(
+            self.config,
+            {self.route.name: self.route},
+            wall_clock=self.clock,
+            monotonic=self.monotonic,
+            fatal_exit=lambda: None,
+        )
+        self.assertEqual(recovered.load(request_id)["schema_version"], core.LEGACY_SCHEMA_VERSION)
+        self.assertTrue(recovered.decide(request_id, "deny"))
+        self.assertEqual(recovered.load(request_id)["state"], "denied")
 
     def test_decision_deadline_is_exclusive(self):
         request_id = self.submit()["id"]
@@ -738,10 +777,123 @@ class ExternalGateTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_sidecar_diff_is_persisted_rendered_selected_and_deleted_on_decision(self):
+        route = DiffRoute()
+        config = GateConfig(
+            state_dir=self.root / "diff-state",
+            socket_path=self.root / "diff-socket" / "request.sock",
+            public_origin=self.config.public_origin,
+            password=self.config.password,
+        )
+        gate = Gate(
+            config,
+            {route.name: route},
+            wall_clock=self.clock,
+            monotonic=self.monotonic,
+            fatal_exit=lambda: None,
+        )
+        body = b"payload"
+        offset = 0
+
+        def read(amount):
+            nonlocal offset
+            chunk = body[offset : offset + amount]
+            offset += len(chunk)
+            return chunk
+
+        request_id = gate.submit(
+            route.name,
+            {"X-Vivarium-Value": "work"},
+            len(body),
+            read,
+            gate.monotonic() + 10,
+        )["id"]
+        record = gate.load(request_id)
+        preview_path = gate.request_path(request_id) / "preview"
+        self.assertEqual(record["preview"]["kind"], "diff.v1")
+        self.assertEqual(preview_path.stat().st_mode & 0o777, 0o600)
+
+        BrowserHandler.gate = gate
+        server = BrowserHTTPServer(("127.0.0.1", 0), BrowserHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        auth = "Basic " + base64.b64encode(("vivarium:" + config.password).encode()).decode()
+        try:
+            malformed = urllib.request.Request(
+                base + f"/r/{request_id}?file",
+                headers={"Authorization": auth},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as invalid_query:
+                urllib.request.urlopen(malformed)
+            self.assertEqual(invalid_query.exception.code, 400)
+            page_request = urllib.request.Request(
+                base + f"/r/{request_id}?file=second.txt&page=1",
+                headers={"Authorization": auth},
+            )
+            page = urllib.request.urlopen(page_request).read().decode()
+            self.assertLessEqual(len(page.encode()), core.MAX_PAGE_BYTES)
+            self.assertIn("Reusable diff", page)
+            self.assertIn("second.txt", page)
+            self.assertIn("Old content", page)
+            self.assertIn("New content", page)
+            self.assertNotIn("old word", page)
+            self.assertIn("Previous file", page)
+            csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+            approved = urllib.request.Request(
+                base + f"/r/{request_id}/approve",
+                data=urlencode({"csrf": csrf}).encode(),
+                method="POST",
+                headers={"Authorization": auth, "Content-Type": "application/x-www-form-urlencoded"},
+            )
+            urllib.request.urlopen(approved)
+            self.assertEqual(gate.load(request_id)["state"], "approved")
+            self.assertFalse(preview_path.exists())
+            self.assertIsNotNone(gate.load(request_id)["preview"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            gate.stop_worker()
+
+    def test_tampered_pending_sidecar_stops_the_gate(self):
+        route = DiffRoute()
+        gate = Gate(
+            GateConfig(
+                state_dir=self.root / "tamper-state",
+                socket_path=self.root / "tamper-socket" / "request.sock",
+                public_origin=self.config.public_origin,
+                password=self.config.password,
+            ),
+            {route.name: route},
+            wall_clock=self.clock,
+            monotonic=self.monotonic,
+            fatal_exit=lambda: None,
+        )
+        body = b"payload"
+        offset = 0
+
+        def read(amount):
+            nonlocal offset
+            chunk = body[offset : offset + amount]
+            offset += len(chunk)
+            return chunk
+
+        request_id = gate.submit(
+            route.name,
+            {"X-Vivarium-Value": "work"},
+            len(body),
+            read,
+            gate.monotonic() + 10,
+        )["id"]
+        preview_path = gate.request_path(request_id) / "preview"
+        preview_path.write_bytes(preview_path.read_bytes() + b"x")
+        self.assertIsNone(gate.approval_fields(request_id))
+        self.assertFalse(gate.healthy())
+
     def test_diff_rendering_stays_within_page_limit_for_many_short_lines(self):
         self.route.sections = [ApprovalSection("Large diff", "diff", "+\n" * 1_500)]
         request_id = self.submit()["id"]
-        record, fields, sections = self.gate.approval_fields(request_id)
+        record, fields, sections, _approval_diff, _preview_data = self.gate.approval_fields(request_id)
         handler = object.__new__(BrowserHandler)
         handler.gate = self.gate
         page = handler.render_page(record, fields, sections)

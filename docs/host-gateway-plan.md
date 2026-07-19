@@ -37,6 +37,8 @@ Fixed MVP limits:
 - 16 KiB maximum `request.json`, including an 8 KiB frozen action;
 - 300-byte result, 20 description fields, 64-byte labels, 512-byte values, up to
   three bounded typed preview sections, and a 32 KiB rendered approval page;
+- reusable diff artifacts with at most 300 listed files, 1 MiB/20,000 retained
+  lines overall, 500 KiB/20,000 lines per file, and an 8 MiB canonical sidecar;
 - 120-second absolute upload deadline;
 - approval port `7843`;
 - host configuration keys `EXTERNAL_GATE_ENABLE`,
@@ -199,7 +201,9 @@ agent is currently usable.
 The generic page prioritizes the first four route facts and the review preview;
 request IDs, full hashes, timestamps, and remaining fields stay available in a
 collapsed technical disclosure. It renders bounded typed previews, never
-route-supplied HTML. `Approved` and `Executing` pages poll a read-only
+route-supplied HTML. A trusted reusable core module validates immutable diff
+artifacts and renders escaped per-file, paginated side-by-side views with
+bounded intra-line highlights. `Approved` and `Executing` pages poll a read-only
 same-origin status endpoint with one nonce-scoped inline script, then reload only
 when the durable state changes. There are no external assets.
 
@@ -228,10 +232,11 @@ class ActionRoute:
     max_body_bytes: int
     metadata_headers: tuple[str, ...]
 
-    def freeze(self, metadata, body_path, digest, size) -> JSONValue: ...
+    def freeze(self, metadata, body_path, digest, size) -> JSONValue | FrozenSubmission: ...
     def decode(self, frozen: JSONValue) -> object: ...
     def describe(self, action) -> list[tuple[str, str]]: ...
     def approval_sections(self, action) -> list[ApprovalSection]: ...
+    def approval_diff(self, action) -> ApprovalDiff | None: ...
     def execute(self, action, body_path) -> ActionResult: ...
     def reconcile(self, action) -> ActionResult: ...
 ```
@@ -244,8 +249,10 @@ class ActionRoute:
   `Executing`/`Uncertain` becomes terminal `Abandoned` with an explicitly unknown
   external outcome. Neither path executes a write.
 - `describe()` returns label/value fields, never HTML.
-- `approval_sections()` optionally returns bounded `text`, `code`, or `diff`
-  sections; the trusted core escapes and renders them, so routes never return HTML.
+- `approval_sections()` optionally returns bounded `text`, `code`, or legacy
+  inline `diff` sections; the trusted core escapes and renders them.
+- `approval_diff()` may opt into the reusable diff viewer only when `freeze()`
+  supplies a matching canonical sidecar. Routes never return HTML.
 - `execute()` performs at most one external write attempt.
 - `reconcile()` reads external state but never retries a write.
 
@@ -272,8 +279,9 @@ review of any added package or credential. It must not change generic HTTP
 routing, approval lifecycle, or persistence.
 
 Route names contain the route version. The request envelope has its own schema
-version. A change that can alter an approved action's meaning requires a new
-route name.
+version; readers preserve requests written by the preceding external-gate schema
+when the action meaning is unchanged. A change that can alter an approved
+action's meaning requires a new route name.
 
 ## Persistence and state
 
@@ -281,6 +289,7 @@ route name.
 requests/<request-id>/
   request.json
   body
+  preview  # optional while Pending
 ```
 
 `request.json` is at most 16 KiB and stores only:
@@ -292,7 +301,8 @@ requests/<request-id>/
 - body size and SHA-256 digest;
 - state;
 - creation, decision-deadline, state-change, and optional approval timestamps;
-- sanitized result capped at 300 bytes.
+- sanitized result capped at 300 bytes;
+- optional diff-sidecar kind, byte size, and SHA-256 digest.
 
 The core rejects a frozen action over 8 KiB after canonical serialization.
 Approval descriptions are capped at 20 fields, with 64-byte labels and 512-byte
@@ -310,9 +320,10 @@ directory before returning approval success, waking the worker, invoking Git, or
 reporting a terminal result. Re-hash the body immediately before execution.
 
 Delete the body after denial, expiry, success, failure, or entry into
-`uncertain`; reconciliation uses only the frozen action. On startup, also remove
-and directory-`fsync` bodies left attached to terminal, `Uncertain`, or
-`Abandoned` records by a crash between state persistence and unlink. Keep at most
+`uncertain`; reconciliation uses only the frozen action. Delete a diff sidecar as
+soon as its request leaves `Pending`; retain only its kind, size, and digest in
+metadata. On startup, also remove and directory-`fsync` bodies or sidecars left
+attached to states that no longer retain them after a crash. Keep at most
 1,000 terminal records and prune the oldest on startup, submission, and every
 terminal transition.
 
@@ -393,11 +404,14 @@ Preserve these restrictions:
   deadlines.
 - Deterministically remove quarantine directories; treat scratch `ENOSPC` as a
   bounded permanent request failure.
-- During `freeze()`, perform bounded local bundle validation in scratch and store
-  a small immutable commit/diff preview in the frozen action. The approval UI
-  renders the escaped unified diff with line-aware highlighting; large diffs are
-  explicitly truncated. Preview generation performs no network work and does
-  not replace authoritative validation immediately before execution.
+- During `freeze()`, perform bounded local bundle validation in scratch. Keep the
+  small commit/stat summary in the frozen action and publish a digest-bound,
+  canonical diff sidecar that is never execution input. The reusable viewer
+  renders one selected file side-by-side with old/new line numbers and bounded
+  intra-line highlighting. Binary and oversized individual files get explicit
+  placeholders without hiding later files. Preview generation performs no
+  network work and does not replace authoritative validation immediately before
+  execution.
 
 Use one authoritative owner/repository/ref validator in the route and mirror it
 in `vpush`.
@@ -537,9 +551,11 @@ compose.external-gate-client.yaml
 external_gate/__init__.py
 external_gate/__main__.py
 external_gate/gate.py
+external_gate/diff_viewer.py
 external_gate/git_push.py
 external_gate/github_known_hosts
 scripts/external-gate.sh
+tests/test_diff_viewer.py
 tests/test_external_gate.py
 tests/test_git_push_route.py
 ```

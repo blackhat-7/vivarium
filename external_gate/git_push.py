@@ -16,7 +16,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .gate import ActionResult, ActionRoute, ApprovalSection, neutralize_bidi_controls
+from .diff_viewer import (
+    MAX_EXTRA_FILE_COUNT,
+    MAX_FILE_BYTES,
+    MAX_FILE_LINES,
+    MAX_FILES,
+    MAX_TOTAL_BYTES,
+    MAX_TOTAL_LINES,
+    OMITTED_BINARY,
+    OMITTED_FILE_BYTES,
+    OMITTED_FILE_LINES,
+    OMITTED_TOTAL_BYTES,
+    OMITTED_TOTAL_LINES,
+    FilePatch,
+    OmittedFilePatch,
+    build_preview,
+    load_preview,
+)
+from .gate import (
+    ActionResult,
+    ActionRoute,
+    ApprovalDiff,
+    ApprovalSection,
+    FrozenSubmission,
+    PreviewPayload,
+    neutralize_bidi_controls,
+)
 
 ZERO_OID = "0" * 40
 MAX_BUNDLE_BYTES = 100 * 1024 * 1024
@@ -25,6 +50,9 @@ MAX_DIFF_PREVIEW_BYTES = 2_400
 MAX_DIFF_PREVIEW_LINES = 120
 MAX_DIFF_STAT_BYTES = 400
 MAX_COMMIT_PREVIEW_BYTES = 600
+MAX_GIT_PATH_BYTES = 4 * 1024
+PREVIEW_TIMEOUT_SECONDS = 120.0
+PER_FILE_TIMEOUT_SECONDS = 20.0
 OID_RE = re.compile(r"^[0-9a-f]{40}$")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -44,6 +72,7 @@ class GitPushAction:
     diff_stat: str = ""
     diff: str = ""
     diff_truncated: bool = False
+    sidecar_preview: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,6 +83,161 @@ class ProcessResult:
     timed_out: bool
     group_stopped: bool
     internal_error: bool = False
+
+
+@dataclass(frozen=True)
+class ChangedPath:
+    path: str
+    old_path: str | None
+    status: str
+
+
+class NameStatusCollector:
+    """Parse Git's NUL-delimited changed-file stream with bounded retention."""
+
+    def __init__(self):
+        self.buffer = bytearray()
+        self.status: str | None = None
+        self.paths: list[bytes] = []
+        self.changed: list[ChangedPath] = []
+        self.total = 0
+
+    @staticmethod
+    def _status(token: bytes) -> str:
+        try:
+            status_token = token.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ValueError("invalid Git file status") from error
+        match = re.fullmatch(r"([ACDMRTUXB])([0-9]{1,3})?", status_token)
+        if match is None or (match.group(2) is not None and int(match.group(2)) > 100):
+            raise ValueError("invalid Git file status")
+        return match.group(1)
+
+    def _token(self, token: bytes) -> None:
+        if self.status is None:
+            self.status = self._status(token)
+            return
+        if not token or len(token) > MAX_GIT_PATH_BYTES:
+            raise ValueError("invalid Git path")
+        self.paths.append(token)
+        required = 2 if self.status in {"R", "C"} else 1
+        if len(self.paths) < required:
+            return
+        if len(self.paths) != required:
+            raise ValueError("invalid Git changed-file list")
+        self.total += 1
+        if self.total > MAX_FILES + MAX_EXTRA_FILE_COUNT:
+            raise ValueError("Git changed-file count is too large")
+        if len(self.changed) < MAX_FILES:
+            if self.status in {"R", "C"}:
+                old_path = os.fsdecode(self.paths[0])
+                path = os.fsdecode(self.paths[1])
+            else:
+                old_path = None
+                path = os.fsdecode(self.paths[0])
+            status = {
+                "A": "created",
+                "D": "deleted",
+                "R": "renamed",
+                "C": "copied",
+            }.get(self.status, "modified")
+            self.changed.append(ChangedPath(path, old_path, status))
+        self.status = None
+        self.paths = []
+
+    def __call__(self, chunk: bytes) -> None:
+        self.buffer.extend(chunk)
+        while True:
+            separator = self.buffer.find(0)
+            if separator < 0:
+                limit = 4 if self.status is None else MAX_GIT_PATH_BYTES
+                if len(self.buffer) > limit:
+                    raise ValueError("Git preview metadata token is too large")
+                return
+            token = bytes(self.buffer[:separator])
+            del self.buffer[: separator + 1]
+            self._token(token)
+
+    def finish(self) -> tuple[list[ChangedPath], int]:
+        if self.buffer or self.status is not None or self.paths:
+            raise ValueError("invalid Git changed-file list")
+        return self.changed, self.total - len(self.changed)
+
+
+class PatchCapture:
+    """Retain at most one per-file allowance while counting the full stream."""
+
+    def __init__(self):
+        self.data = bytearray()
+        self.byte_count = 0
+        self.newlines = 0
+        self.last_byte: int | None = None
+        self.stopped_retaining = False
+        self.line_prefix = bytearray()
+        self.in_hunk = False
+        self.additions = 0
+        self.deletions = 0
+        self.finished = False
+
+    def _finish_line(self) -> None:
+        prefix = bytes(self.line_prefix)
+        if prefix.startswith(b"@@"):
+            self.in_hunk = True
+        elif self.in_hunk and prefix.startswith(b"+"):
+            self.additions += 1
+        elif self.in_hunk and prefix.startswith(b"-"):
+            self.deletions += 1
+        self.line_prefix.clear()
+
+    def __call__(self, chunk: bytes) -> None:
+        if self.finished:
+            raise ValueError("Git patch capture is already finished")
+        pieces = chunk.split(b"\n")
+        for index, piece in enumerate(pieces):
+            room = 2 - len(self.line_prefix)
+            if room > 0:
+                self.line_prefix.extend(piece[:room])
+            if index + 1 < len(pieces):
+                self._finish_line()
+        self.byte_count += len(chunk)
+        self.newlines += len(pieces) - 1
+        if chunk:
+            self.last_byte = chunk[-1]
+        if self.stopped_retaining:
+            return
+        byte_room = MAX_FILE_BYTES + 1 - len(self.data)
+        candidate = chunk[:max(0, byte_room)]
+        line_room = MAX_FILE_LINES + 1 - self.data.count(b"\n")
+        if line_room <= 0:
+            candidate = b""
+        elif candidate.count(b"\n") >= line_room:
+            end = -1
+            cursor = 0
+            for _ in range(line_room):
+                end = candidate.find(b"\n", cursor)
+                cursor = end + 1
+            candidate = candidate[: end + 1]
+        self.data.extend(candidate)
+        if len(self.data) > MAX_FILE_BYTES or self.data.count(b"\n") > MAX_FILE_LINES:
+            self.stopped_retaining = True
+
+    def finish(self) -> None:
+        if self.finished:
+            return
+        if self.byte_count and self.last_byte != ord("\n"):
+            self._finish_line()
+        self.finished = True
+
+    @property
+    def line_count(self) -> int:
+        return self.newlines + (1 if self.byte_count and self.last_byte != ord("\n") else 0)
+
+
+def parse_name_status(data: bytes) -> list[ChangedPath]:
+    collector = NameStatusCollector()
+    collector(data)
+    changed, _extra = collector.finish()
+    return changed
 
 
 class RouteFailure(Exception):
@@ -177,7 +361,15 @@ class ProcessRunner:
                 return False
         return not self._group_exists(group_id)
 
-    def run(self, command: list[str], *, cwd: Path, env: dict[str, str], timeout: float) -> ProcessResult:
+    def run(
+        self,
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float,
+        stdout_consumer: Callable[[bytes], None] | None = None,
+    ) -> ProcessResult:
         process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -214,9 +406,12 @@ class ProcessRunner:
                     if not chunk:
                         selector.unregister(key.fd)
                         continue
-                    room = self.output_limit - len(output[key.fd])
-                    if room > 0:
-                        output[key.fd].extend(chunk[:room])
+                    if key.fd == stdout_fd and stdout_consumer is not None:
+                        stdout_consumer(chunk)
+                    else:
+                        room = self.output_limit - len(output[key.fd])
+                        if room > 0:
+                            output[key.fd].extend(chunk[:room])
                 if process.poll() is not None and not events:
                     for descriptor in list(selector.get_map()):
                         try:
@@ -226,9 +421,12 @@ class ProcessRunner:
                         if not chunk:
                             selector.unregister(descriptor)
                             continue
-                        room = self.output_limit - len(output[descriptor])
-                        if room > 0:
-                            output[descriptor].extend(chunk[:room])
+                        if descriptor == stdout_fd and stdout_consumer is not None:
+                            stdout_consumer(chunk)
+                        else:
+                            room = self.output_limit - len(output[descriptor])
+                            if room > 0:
+                                output[descriptor].extend(chunk[:room])
             if timed_out:
                 group_stopped = self._stop_group(process)
             else:
@@ -345,7 +543,7 @@ class GitPushRoute(ActionRoute):
         validate_fields(*identity)
         action = GitPushAction(*identity)
         try:
-            commit_count, commits, diff_stat, diff, diff_truncated = self._build_preview(body_path, action)
+            commit_count, commits, diff_stat, preview = self._build_preview(body_path, action)
         except (IsolationLost, RouteFailure, ScratchCleanupError, OSError) as error:
             raise ValueError("Git push preview validation failed") from error
         frozen = {
@@ -358,19 +556,22 @@ class GitPushRoute(ActionRoute):
             "commit_count": commit_count,
             "commits": commits,
             "diff_stat": diff_stat,
-            "diff": diff,
-            "diff_truncated": diff_truncated,
         }
         self.decode(frozen)
-        return frozen
+        return FrozenSubmission(frozen, PreviewPayload("diff.v1", preview))
 
     def decode(self, frozen) -> GitPushAction:
         identity_keys = {"profile", "owner", "repo", "ref", "old_oid", "new_oid"}
-        preview_keys = {"commit_count", "commits", "diff_stat", "diff", "diff_truncated"}
+        inline_preview_keys = {"commit_count", "commits", "diff_stat", "diff", "diff_truncated"}
+        sidecar_preview_keys = {"commit_count", "commits", "diff_stat"}
         if not isinstance(frozen, dict):
             raise ValueError("invalid Git push action")
-        keys = set(frozen)
-        if keys != identity_keys and keys != identity_keys | preview_keys:
+        keys = frozenset(frozen)
+        if keys not in {
+            frozenset(identity_keys),
+            frozenset(identity_keys | inline_preview_keys),
+            frozenset(identity_keys | sidecar_preview_keys),
+        }:
             raise ValueError("invalid Git push action")
         identity = [frozen[key] for key in ("profile", "owner", "repo", "ref", "old_oid", "new_oid")]
         validate_fields(*identity)
@@ -385,14 +586,16 @@ class GitPushRoute(ActionRoute):
             not isinstance(frozen["commit_count"], int)
             or isinstance(frozen["commit_count"], bool)
             or frozen["commit_count"] <= 0
-            or not isinstance(frozen["diff_truncated"], bool)
+            or ("diff_truncated" in frozen and not isinstance(frozen["diff_truncated"], bool))
         ):
             raise ValueError("invalid Git push preview")
-        for key, limit in (
+        bounded_fields = [
             ("commits", MAX_COMMIT_PREVIEW_BYTES),
             ("diff_stat", MAX_DIFF_STAT_BYTES),
-            ("diff", MAX_DIFF_PREVIEW_BYTES),
-        ):
+        ]
+        if "diff" in frozen:
+            bounded_fields.append(("diff", MAX_DIFF_PREVIEW_BYTES))
+        for key, limit in bounded_fields:
             value = frozen[key]
             if (
                 not isinstance(value, str)
@@ -400,6 +603,14 @@ class GitPushRoute(ActionRoute):
                 or any(ord(char) < 32 and char not in {"\n", "\t"} for char in value)
             ):
                 raise ValueError("invalid Git push preview")
+        if keys == identity_keys | sidecar_preview_keys:
+            return GitPushAction(
+                *identity,
+                frozen["commit_count"],
+                frozen["commits"],
+                frozen["diff_stat"],
+                sidecar_preview=True,
+            )
         return GitPushAction(
             *identity,
             frozen["commit_count"],
@@ -429,22 +640,29 @@ class GitPushRoute(ActionRoute):
         if not action.commit_count:
             return []
         noun = "commit" if action.commit_count == 1 else "commits"
-        sections = [
-            ApprovalSection(
-                "Changes in this push",
-                "diff",
-                action.diff,
-                action.diff_stat or "No file content changes",
-                action.diff_truncated,
+        sections = []
+        if not action.sidecar_preview:
+            sections.append(
+                ApprovalSection(
+                    "Changes in this push",
+                    "diff",
+                    action.diff,
+                    action.diff_stat or "No file content changes",
+                    action.diff_truncated,
+                )
             )
-        ]
         if action.commits:
             sections.append(
                 ApprovalSection("Commits", "code", action.commits, f"{action.commit_count} {noun}")
             )
         return sections
 
-    def _build_preview(self, body_path: Path, action: GitPushAction) -> tuple[int, str, str, str, bool]:
+    def approval_diff(self, action: GitPushAction) -> ApprovalDiff | None:
+        if not action.sidecar_preview:
+            return None
+        return ApprovalDiff("Changes in this push", action.diff_stat or "No file content changes")
+
+    def _build_preview(self, body_path: Path, action: GitPushAction) -> tuple[int, str, str, bytes]:
         with self._scratch("git-preview-") as root:
             repository = self._prepare(body_path, action, root)
             if action.old_oid == ZERO_OID:
@@ -474,19 +692,127 @@ class GitPushRoute(ActionRoute):
             stat_text, _ = bounded_preview(
                 self._git(
                     repository, "diff", "--stat=90,24", "--compact-summary", "--no-ext-diff",
-                    "--no-textconv", "--no-renames", base, action.new_oid, "--", timeout=20,
+                    "--no-textconv", "--find-renames", base, action.new_oid, "--", timeout=20,
                 ).encode(),
                 MAX_DIFF_STAT_BYTES,
             )
-            diff, diff_truncated = bounded_preview(
-                self._git(
-                    repository, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-                    "--unified=3", base, action.new_oid, "--", timeout=20,
-                ).encode(),
-                MAX_DIFF_PREVIEW_BYTES,
-                MAX_DIFF_PREVIEW_LINES,
+            preview = self._build_diff_artifact(repository, base, action.new_oid)
+            return commit_count, commits, stat_text, preview
+
+    @staticmethod
+    def _require_preview_process(result: ProcessResult) -> None:
+        if not result.group_stopped:
+            raise IsolationLost("git_process_unstopped", "Git preview process did not stop cleanly")
+        if result.internal_error or result.timed_out or result.returncode != 0:
+            raise RouteFailure("git_preview", "Git diff preview generation failed")
+
+    def _build_diff_artifact(self, repository: Path, base: str, new_oid: str) -> bytes:
+        deadline = time.monotonic() + PREVIEW_TIMEOUT_SECONDS
+        names = NameStatusCollector()
+        result = self._git_result(
+            repository,
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            base,
+            new_oid,
+            "--",
+            timeout=min(PER_FILE_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic())),
+            stdout_consumer=names,
+        )
+        self._require_preview_process(result)
+        changed_paths, extra_file_count = names.finish()
+        files: list[FilePatch | OmittedFilePatch] = []
+        included_bytes = 0
+        included_lines = 0
+        for changed in changed_paths[:MAX_FILES]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RouteFailure("git_preview_timeout", "Git diff preview generation timed out")
+            capture = PatchCapture()
+            pathspecs = [f":(top,literal){changed.path}"]
+            if changed.status == "renamed" and changed.old_path is not None:
+                pathspecs.insert(0, f":(top,literal){changed.old_path}")
+            result = self._git_result(
+                repository,
+                "diff",
+                "--full-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--find-renames",
+                "--unified=3",
+                base,
+                new_oid,
+                "--",
+                *pathspecs,
+                timeout=min(PER_FILE_TIMEOUT_SECONDS, max(0.1, remaining)),
+                stdout_consumer=capture,
             )
-            return commit_count, commits, stat_text, diff, diff_truncated
+            self._require_preview_process(result)
+            capture.finish()
+            if capture.byte_count > MAX_FILE_BYTES:
+                files.append(
+                    OmittedFilePatch(
+                        changed.path,
+                        OMITTED_FILE_BYTES,
+                        capture.byte_count,
+                        capture.line_count,
+                        capture.additions,
+                        capture.deletions,
+                        old_path=changed.old_path,
+                        status=changed.status,
+                    )
+                )
+                continue
+            if capture.line_count > MAX_FILE_LINES:
+                files.append(
+                    OmittedFilePatch(
+                        changed.path,
+                        OMITTED_FILE_LINES,
+                        capture.byte_count,
+                        capture.line_count,
+                        capture.additions,
+                        capture.deletions,
+                        old_path=changed.old_path,
+                        status=changed.status,
+                    )
+                )
+                continue
+            source = FilePatch(
+                changed.path,
+                bytes(capture.data),
+                old_path=changed.old_path,
+                status=changed.status,
+            )
+            summary = load_preview(build_preview([source])).files[0]
+            reason = summary.omission_reason
+            if reason is None and included_bytes + summary.byte_count > MAX_TOTAL_BYTES:
+                reason = OMITTED_TOTAL_BYTES
+            elif reason is None and included_lines + summary.line_count > MAX_TOTAL_LINES:
+                reason = OMITTED_TOTAL_LINES
+            if reason is None:
+                files.append(source)
+                included_bytes += summary.byte_count
+                included_lines += summary.line_count
+            else:
+                files.append(
+                    OmittedFilePatch(
+                        changed.path,
+                        reason,
+                        summary.byte_count,
+                        summary.line_count,
+                        summary.additions,
+                        summary.deletions,
+                        changed.old_path,
+                        summary.status,
+                        summary.binary,
+                    )
+                )
+
+        return build_preview(files, extra_file_count=extra_file_count)
 
     def remote_url(self, action: GitPushAction) -> str:
         return f"git@github.com:{action.owner}/{action.repo}.git"
@@ -505,7 +831,6 @@ class GitPushRoute(ActionRoute):
 
     @contextlib.contextmanager
     def _scratch(self, prefix: str):
-        self.cleanup_scratch((prefix,))
         path = Path(tempfile.mkdtemp(prefix=prefix, dir=self.scratch_dir))
         try:
             yield path
@@ -547,7 +872,13 @@ class GitPushRoute(ActionRoute):
             "GIT_SSH_COMMAND": ssh_command,
         }
 
-    def _git_result(self, directory: Path, *arguments: str, timeout: float = 120) -> ProcessResult:
+    def _git_result(
+        self,
+        directory: Path,
+        *arguments: str,
+        timeout: float = 120,
+        stdout_consumer: Callable[[bytes], None] | None = None,
+    ) -> ProcessResult:
         command = [
             "/usr/bin/git",
             "-c", "core.hooksPath=/dev/null",
@@ -557,7 +888,13 @@ class GitPushRoute(ActionRoute):
             "-c", "protocol.ssh.allow=always",
             *arguments,
         ]
-        return self.runner.run(command, cwd=directory, env=self.git_env(), timeout=timeout)
+        return self.runner.run(
+            command,
+            cwd=directory,
+            env=self.git_env(),
+            timeout=timeout,
+            stdout_consumer=stdout_consumer,
+        )
 
     def _git(self, directory: Path, *arguments: str, timeout: float = 120) -> str:
         result = self._git_result(directory, *arguments, timeout=timeout)
