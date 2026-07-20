@@ -36,6 +36,7 @@ from external_gate.gate import (
     PreviewPayload,
     UnixHTTPServer,
 )
+from external_gate.git_push import MAX_BUNDLE_BYTES
 
 
 class Clock:
@@ -1026,10 +1027,12 @@ class ExternalGateConfigTests(unittest.TestCase):
         self.assertRegex(dockerfile.splitlines()[0], r"^FROM .+@sha256:[0-9a-f]{64}$")
         self.assertIn("USER vivarium", dockerfile)
         self.assertIn('ENTRYPOINT ["python", "-m", "external_gate"]', dockerfile)
+        self.assertEqual(MAX_BUNDLE_BYTES, 2 * 1024 * 1024 * 1024)
+        self.assertEqual(core.MAX_OPEN_BODY_BYTES, 4 * 1024 * 1024 * 1024)
         for expected in (
             'name: vivarium-external-gate', 'cap_drop: ["ALL"]', 'no-new-privileges:true',
-            'read_only: true', 'cpus: 1.0', 'mem_limit: 2g', 'pids_limit: 128',
-            'size=1073741824', 'max-size: 10m', 'max-file: "3"',
+            'read_only: true', 'cpus: 1.0', 'mem_limit: 6g', 'pids_limit: 128',
+            'size=4294967296', 'max-size: 10m', 'max-file: "3"',
         ):
             self.assertIn(expected, compose)
         self.assertNotIn("cap_add", compose)
@@ -1051,6 +1054,7 @@ class ExternalGateIntegrationTests(unittest.TestCase):
         self.assertIn("/run/vivarium-external-gate/request.sock", script)
         self.assertIn("/v1/requests/git.push-branch.v1", script)
         self.assertIn("request submitted; no push has happened yet", script)
+        self.assertIn("MAX_BUNDLE_BYTES=$((2 * 1024 * 1024 * 1024))", script)
         self.assertEqual(script.count("X-Vivarium-"), 6)
         for legacy in ("VIVARIUM_PUSH_GATE_SOCKET", "/run/vivarium-push-gate", "http://localhost/requests"):
             self.assertNotIn(legacy, script)

@@ -26,14 +26,14 @@ or credential proxy.
 
 Fixed MVP limits:
 
-- 100 MiB maximum Git bundle;
+- 2 GiB maximum Git bundle;
 - 20 open requests;
-- 500 MiB total open-request bodies;
+- 4 GiB total open-request bodies;
 - 24-hour approval deadline;
 - 1,000 retained terminal metadata records;
 - one execution worker;
 - one in-flight submission reader and one bounded approval handler;
-- 1 GiB scratch `tmpfs` for Git quarantine work;
+- 4 GiB scratch `tmpfs` for Git quarantine work;
 - 16 KiB maximum `request.json`, including an 8 KiB frozen action;
 - 300-byte result, 20 description fields, 64-byte labels, 512-byte values, up to
   three bounded typed preview sections, and a 32 KiB rendered approval page;
@@ -395,7 +395,7 @@ Preserve these restrictions:
 - No deletes, tags, force updates, arbitrary refspecs, hooks, or Git LFS.
 - Exactly one bundle `HEAD` at the approved commit.
 - Strict verification in a fresh bare quarantine repository created only on the
-  1 GiB scratch `tmpfs`, never on persistent state storage.
+  4 GiB scratch `tmpfs`, never on persistent state storage.
 - Reconstruct `git@github.com:OWNER/REPOSITORY.git` internally.
 - Check the remote OID immediately before pushing.
 - Use `--force-with-lease` only as compare-and-set protection for the frozen old
@@ -512,9 +512,9 @@ preserves its state and configuration.
   tree;
 - `cap_drop: [ALL]`, no added capabilities;
 - `no-new-privileges:true`;
-- read-only root filesystem and a 1 GiB scratch `tmpfs` used for every Git
+- read-only root filesystem and a 4 GiB scratch `tmpfs` used for every Git
   quarantine repository;
-- `cpus: 1.0`, `mem_limit: 2g`, and `pids_limit: 128`, so the 1 GiB scratch
+- `cpus: 1.0`, `mem_limit: 6g`, and `pids_limit: 128`, so the 4 GiB scratch
   limit is reached before the container memory limit under expected Git usage;
 - only the state, socket, config, and SSH-agent mounts listed above;
 - approval publishing follows the enforced loopback/proxy/Tailscale matrix;

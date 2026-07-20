@@ -44,7 +44,9 @@ from .gate import (
 )
 
 ZERO_OID = "0" * 40
-MAX_BUNDLE_BYTES = 100 * 1024 * 1024
+MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
+BUNDLE_IMPORT_TIMEOUT_SECONDS = 600
+PUSH_TIMEOUT_SECONDS = 900
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_DIFF_PREVIEW_BYTES = 2_400
 MAX_DIFF_PREVIEW_LINES = 120
@@ -933,10 +935,16 @@ class GitPushRoute(ActionRoute):
         heads = self._git(repository, "bundle", "list-heads", str(body_path)).splitlines()
         if heads != [f"{action.new_oid} HEAD"]:
             raise RouteFailure("bundle_heads", "bundle does not contain exactly the approved HEAD")
-        self._git(repository, "fetch", "--quiet", str(body_path), "HEAD:refs/heads/candidate")
+        self._git(
+            repository, "fetch", "--quiet", str(body_path), "HEAD:refs/heads/candidate",
+            timeout=BUNDLE_IMPORT_TIMEOUT_SECONDS,
+        )
         if self._git(repository, "rev-parse", "refs/heads/candidate").strip() != action.new_oid:
             raise RouteFailure("bundle_commit", "bundle commit does not match approval")
-        self._git(repository, "fsck", "--strict", "--no-reflogs", action.new_oid)
+        self._git(
+            repository, "fsck", "--strict", "--no-reflogs", action.new_oid,
+            timeout=BUNDLE_IMPORT_TIMEOUT_SECONDS,
+        )
         lfs = self._git_result(
             repository,
             "grep", "-I", "-q", "-e", "filter=lfs", action.new_oid, "--",
@@ -982,7 +990,7 @@ class GitPushRoute(ActionRoute):
                     repository,
                     "push", "--porcelain", "--no-verify", lease,
                     self.remote_url(action), f"{action.new_oid}:{action.ref}",
-                    timeout=180,
+                    timeout=PUSH_TIMEOUT_SECONDS,
                 )
                 if not pushed.group_stopped:
                     return ActionResult(

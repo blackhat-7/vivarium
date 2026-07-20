@@ -16,7 +16,7 @@ services:
     security_opt:
       - no-new-privileges:true
     cpus: 1.0
-    mem_limit: 2g
+    mem_limit: 6g
     pids_limit: 128
     ports:
       - "${EXTERNAL_GATE_APPROVAL_BIND_ADDR:?approval bind is required}:7843:7843"
@@ -44,7 +44,7 @@ services:
         bind:
           create_host_path: false
     tmpfs:
-      - /var/tmp/vivarium-external-gate:rw,noexec,nosuid,nodev,size=1073741824,mode=700,uid=${HOST_UID},gid=${HOST_GID}
+      - /var/tmp/vivarium-external-gate:rw,noexec,nosuid,nodev,size=4294967296,mode=700,uid=${HOST_UID},gid=${HOST_GID}
     logging:
       driver: json-file
       options:

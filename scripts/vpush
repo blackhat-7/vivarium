@@ -4,7 +4,7 @@ set -euo pipefail
 export LC_ALL=C
 
 SOCKET=${VIVARIUM_EXTERNAL_GATE_SOCKET:-/run/vivarium-external-gate/request.sock}
-MAX_BUNDLE_BYTES=$((100 * 1024 * 1024))
+MAX_BUNDLE_BYTES=$((2 * 1024 * 1024 * 1024))
 ZERO_OID=0000000000000000000000000000000000000000
 fatal() { echo "vpush: $*" >&2; exit 1; }
 
@@ -64,7 +64,7 @@ bundle=$(mktemp "${TMPDIR:-/tmp}/vpush.XXXXXX.bundle")
 trap 'rm -f "$bundle"' EXIT
 /usr/bin/git -C "$root" -c core.hooksPath=/dev/null bundle create "$bundle" HEAD >/dev/null
 size=$(stat -c '%s' "$bundle")
-(( size <= MAX_BUNDLE_BYTES )) || fatal "bundle exceeds the 100 MiB limit"
+(( size <= MAX_BUNDLE_BYTES )) || fatal "bundle exceeds the 2 GiB limit"
 
 response=$(/usr/bin/curl --silent --show-error --fail-with-body --unix-socket "$SOCKET" \
   --connect-timeout 3 --max-time 120 -X POST -H 'Content-Type: application/x-git-bundle' \

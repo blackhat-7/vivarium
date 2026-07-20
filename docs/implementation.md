@@ -55,7 +55,7 @@ From `compose.yaml` for each profile:
 - no privileged mode
 
 The standalone gate additionally has no added capabilities, a read-only root,
-a 1 GiB scratch tmpfs, 1 CPU, 2 GiB memory, 128 PIDs, bounded logs, and only
+a 4 GiB scratch tmpfs, 1 CPU, 6 GiB memory, 128 PIDs, bounded logs, and only
 state/socket/config/dedicated-agent mounts. It never joins profile networks.
 
 ## Image contents
