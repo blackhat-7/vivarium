@@ -521,8 +521,9 @@ preserves its state and configuration.
 - no Docker socket, privileged mode, profile network, host home, or keys;
 - Docker log rotation capped at three 10 MiB files.
 
-Suppress request access logs. Structured lifecycle/state logs may include only
-request ID, route, old/new state, and a fixed result code—never authorization,
+Suppress request access logs. Structured lifecycle/state and submission-rejection
+logs may include only request ID, route, old/new state, a route-declared fixed
+operation, and a route-declared fixed result or failure code—never authorization,
 request bodies, agent-controlled text, paths, URLs, or raw Git/SSH output.
 Application code, not Compose, enforces body, request-count, persistent-storage,
 handler, and worker limits.

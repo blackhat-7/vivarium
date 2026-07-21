@@ -243,10 +243,11 @@ def parse_name_status(data: bytes) -> list[ChangedPath]:
 
 
 class RouteFailure(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, operation: str = "route"):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.operation = operation
 
 
 class RemoteUnavailable(RouteFailure):
@@ -515,6 +516,33 @@ class GitPushRoute(ActionRoute):
         "X-Vivarium-Old-Oid",
         "X-Vivarium-New-Oid",
     )
+    diagnostic_operations = frozenset({
+        "bundle",
+        "diff",
+        "fetch",
+        "fsck",
+        "git",
+        "hash_object",
+        "init",
+        "log",
+        "rev_list",
+        "rev_parse",
+    })
+    diagnostic_codes = frozenset({
+        "attributes_check",
+        "bundle_commit",
+        "bundle_heads",
+        "git_internal",
+        "git_lfs",
+        "git_preview",
+        "git_preview_timeout",
+        "git_process_unstopped",
+        "git_timeout",
+        "git_validation",
+        "not_fast_forward",
+        "scratch_cleanup",
+        "scratch_full",
+    })
 
     def __init__(
         self,
@@ -900,16 +928,27 @@ class GitPushRoute(ActionRoute):
 
     def _git(self, directory: Path, *arguments: str, timeout: float = 120) -> str:
         result = self._git_result(directory, *arguments, timeout=timeout)
+        operation = arguments[0].replace("-", "_") if arguments else "git"
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,31}", operation) is None:
+            operation = "git"
         if not result.group_stopped:
-            raise IsolationLost("git_process_unstopped", "Git process did not stop cleanly")
+            raise IsolationLost(
+                "git_process_unstopped",
+                "Git process did not stop cleanly",
+                operation,
+            )
         if result.internal_error:
-            raise RouteFailure("git_internal", "Git validation failed internally")
+            raise RouteFailure("git_internal", "Git validation failed internally", operation)
         if result.timed_out:
-            raise RouteFailure("git_timeout", "Git validation timed out")
+            raise RouteFailure("git_timeout", "Git validation timed out", operation)
         if result.returncode != 0:
             if b"No space left on device" in result.stderr:
-                raise RouteFailure("scratch_full", "bounded Git scratch space is full")
-            raise RouteFailure("git_validation", "Git validation failed")
+                raise RouteFailure(
+                    "scratch_full",
+                    "bounded Git scratch space is full",
+                    operation,
+                )
+            raise RouteFailure("git_validation", "Git validation failed", operation)
         return result.stdout.decode("utf-8", "replace")
 
     def _remote_oid(self, directory: Path, action: GitPushAction) -> str:

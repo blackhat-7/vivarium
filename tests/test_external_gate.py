@@ -36,7 +36,7 @@ from external_gate.gate import (
     PreviewPayload,
     UnixHTTPServer,
 )
-from external_gate.git_push import MAX_BUNDLE_BYTES
+from external_gate.git_push import MAX_BUNDLE_BYTES, RouteFailure
 
 
 class Clock:
@@ -502,6 +502,75 @@ class ExternalGateTests(unittest.TestCase):
         self.assertNotIn(str(self.gate.request_path(request_id)), output)
         self.assertIn(f"id={request_id}", output)
         self.assertIn("code=denied", output)
+
+    def test_submission_rejection_logs_only_declared_route_diagnostics(self):
+        class FailingRoute(FakeRoute):
+            diagnostic_operations = frozenset({"fetch"})
+            diagnostic_codes = frozenset({"git_validation"})
+
+            def freeze(self, metadata, _body_path, _digest, _size):
+                try:
+                    raise RouteFailure(
+                        "git_validation",
+                        "must-not-appear-in-logs",
+                        "fetch",
+                    )
+                except RouteFailure as error:
+                    raise ValueError(metadata["X-Vivarium-Value"]) from error
+
+        route = FailingRoute()
+        gate = Gate(
+            GateConfig(
+                state_dir=self.root / "failure-state",
+                socket_path=self.root / "failure-socket" / "request.sock",
+                public_origin=self.config.public_origin,
+                password=self.config.password,
+            ),
+            {route.name: route},
+            wall_clock=self.clock,
+            monotonic=self.monotonic,
+            fatal_exit=lambda: None,
+        )
+        secret = "hostile-secret-value"
+        with self.assertLogs("external_gate", level="WARNING") as captured:
+            with self.assertRaises(GateError) as rejected:
+                self.submit(value=secret, gate=gate)
+        self.assertEqual(rejected.exception.code, "invalid_action")
+        output = "\n".join(captured.output)
+        self.assertIn("route=fake.v1 operation=fetch code=git_validation", output)
+        self.assertNotIn(secret, output)
+        self.assertNotIn("must-not-appear-in-logs", output)
+        self.assertNotIn(str(gate.config.state_dir), output)
+
+    def test_submission_rejection_ignores_undeclared_exception_attributes(self):
+        class HostileRoute(FakeRoute):
+            def freeze(self, metadata, _body_path, _digest, _size):
+                error = ValueError("must-not-appear-in-logs")
+                setattr(error, "operation", metadata["X-Vivarium-Value"])
+                setattr(error, "code", metadata["X-Vivarium-Value"])
+                raise error
+
+        route = HostileRoute()
+        gate = Gate(
+            GateConfig(
+                state_dir=self.root / "hostile-failure-state",
+                socket_path=self.root / "hostile-failure-socket" / "request.sock",
+                public_origin=self.config.public_origin,
+                password=self.config.password,
+            ),
+            {route.name: route},
+            wall_clock=self.clock,
+            monotonic=self.monotonic,
+            fatal_exit=lambda: None,
+        )
+        secret = "agent_secret_value"
+        with self.assertLogs("external_gate", level="WARNING") as captured:
+            with self.assertRaises(GateError):
+                self.submit(value=secret, gate=gate)
+        output = "\n".join(captured.output)
+        self.assertIn("route=fake.v1 operation=route_freeze code=invalid_action", output)
+        self.assertNotIn(secret, output)
+        self.assertNotIn("must-not-appear-in-logs", output)
 
     def test_terminal_pruning_runs_on_transition(self):
         config = GateConfig(

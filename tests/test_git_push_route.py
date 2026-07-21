@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from external_gate.diff_viewer import MAX_FILE_BYTES, MAX_FILE_LINES, load_preview, render_preview
-from external_gate.gate import ActionResult, FrozenSubmission, Gate, GateConfig
+from external_gate.gate import ActionResult, FrozenSubmission, Gate, GateConfig, GateError
 from external_gate.git_push import (
     AgentValidator,
     GitPushAction,
@@ -426,6 +426,60 @@ class GitPushRouteTests(unittest.TestCase):
             result = self.route.execute(self.action(), self.bundle())
         self.assertEqual((result.state, result.code), ("uncertain", "scratch_cleanup"))
         self.assertTrue(result.restart_before_reconcile)
+
+    def test_git_failure_carries_only_safe_operation_code(self):
+        failed = ProcessResult(128, b"", b"agent-controlled stderr", False, True)
+        with mock.patch.object(self.route, "_git_result", return_value=failed):
+            with self.assertRaises(RouteFailure) as caught:
+                self.route._git(self.scratch, "rev-parse", "hostile-value")
+        self.assertEqual(caught.exception.code, "git_validation")
+        self.assertEqual(caught.exception.operation, "rev_parse")
+        self.assertNotIn("agent-controlled", str(caught.exception))
+
+    def test_gate_logs_git_operation_without_git_output(self):
+        bundle = self.bundle()
+        body = bundle.read_bytes()
+        offset = 0
+
+        def read(amount):
+            nonlocal offset
+            chunk = body[offset : offset + amount]
+            offset += len(chunk)
+            return chunk
+
+        gate = Gate(
+            GateConfig(
+                state_dir=self.root / "log-state",
+                socket_path=self.root / "log-socket" / "request.sock",
+                public_origin="http://127.0.0.1:7843",
+                password="a" * 32,
+            ),
+            {self.route.name: self.route},
+            fatal_exit=lambda: None,
+        )
+        new_oid = self.action().new_oid
+        headers = dict(zip(
+            self.route.metadata_headers,
+            ["work", "example", "repo", self.ref, ZERO_OID, new_oid],
+        ))
+        failed = ProcessResult(128, b"", b"agent_secret_value", False, True)
+        with mock.patch.object(self.route, "_git_result", return_value=failed):
+            with self.assertLogs("external_gate", level="WARNING") as captured:
+                with self.assertRaises(GateError):
+                    gate.submit(
+                        self.route.name,
+                        headers,
+                        len(body),
+                        read,
+                        gate.monotonic() + 10,
+                    )
+        output = "\n".join(captured.output)
+        self.assertIn(
+            "route=git.push-branch.v1 operation=init code=git_validation",
+            output,
+        )
+        self.assertNotIn("agent_secret_value", output)
+        self.assertNotIn(str(bundle), output)
 
     def test_process_runner_bounds_output_and_reaps_timeout(self):
         runner = ProcessRunner(output_limit=1024)

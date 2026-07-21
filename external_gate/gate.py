@@ -67,6 +67,30 @@ PREVIEW_DELETE_STATES = ALL_STATES - {"pending"}
 LOG = logging.getLogger("external_gate")
 
 
+def _route_failure_diagnostic(route: ActionRoute, error: BaseException) -> tuple[str, str]:
+    """Return only diagnostics explicitly declared by reviewed route code."""
+    operation = "route_freeze"
+    code = "invalid_action"
+    allowed_operations = route.diagnostic_operations | frozenset({operation})
+    allowed_codes = route.diagnostic_codes | frozenset({code, "local_io"})
+    current: BaseException | None = error
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        candidate_operation = getattr(current, "operation", None)
+        if isinstance(candidate_operation, str) and candidate_operation in allowed_operations:
+            operation = candidate_operation
+        candidate_code = getattr(current, "code", None)
+        if isinstance(candidate_code, str) and candidate_code in allowed_codes:
+            code = candidate_code
+        elif isinstance(current, OSError) and code == "invalid_action":
+            code = "local_io"
+        current = current.__cause__
+    return operation, code
+
+
 class GateError(Exception):
     """Safe request error carrying an HTTP status and fixed result code."""
 
@@ -122,6 +146,8 @@ class ActionRoute:
     max_body_bytes: int
     metadata_headers: tuple[str, ...]
     display_name: str = ""
+    diagnostic_operations: frozenset[str] = frozenset()
+    diagnostic_codes: frozenset[str] = frozenset()
 
     def freeze(self, metadata: dict[str, str], body_path: Path, digest: str, size: int):
         raise NotImplementedError
@@ -204,6 +230,13 @@ class Gate:
     ):
         if not routes or any(name != route.name or not ROUTE_RE.fullmatch(name) for name, route in routes.items()):
             raise ValueError("invalid route registry")
+        for route in routes.values():
+            for diagnostics in (route.diagnostic_operations, route.diagnostic_codes):
+                if not isinstance(diagnostics, frozenset) or any(
+                    not isinstance(value, str) or RESULT_CODE_RE.fullmatch(value) is None
+                    for value in diagnostics
+                ):
+                    raise ValueError("invalid route diagnostic registry")
         if len(config.password) < 20:
             raise ValueError("approval password must contain at least 20 characters")
         self.config = config
@@ -696,6 +729,14 @@ class Gate:
             except GateError:
                 raise
             except (OSError, ValueError) as error:
+                operation, failure_code = _route_failure_diagnostic(route, error)
+                LOG.warning(
+                    "submission_rejected id=%s route=%s operation=%s code=%s",
+                    request_id,
+                    route_name,
+                    operation,
+                    failure_code,
+                )
                 raise GateError(400, "invalid_action", "route action validation failed") from error
             now = self.wall_clock()
             record = {
