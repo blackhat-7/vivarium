@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       gnupg2 pass \
       golang-go rustc cargo \
       python3 python3-pip python3-venv python-is-python3 \
+      libglib2.0-0t64 \
       unzip xz-utils \
  && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
@@ -75,6 +76,10 @@ RUN chmod 0755 /usr/local/bin/vpush
 # uv — fast python package manager, system-wide
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/
+
+# opencv headless, system-wide; headless wheels still need libglib at runtime
+RUN uv pip install --system --break-system-packages opencv-python-headless \
+    && python3 -c "import cv2"
 
 # opencode — install iff INSTALL_OPENCODE=true, fail hard on error.
 # (validation that at least one agent CLI is selected lives in scripts/up.sh
