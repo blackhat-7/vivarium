@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       gnupg2 pass \
       golang-go rustc cargo \
       python3 python3-pip python3-venv python-is-python3 \
+      libgl1 \
       libglib2.0-0t64 \
       unzip xz-utils \
  && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
