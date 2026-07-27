@@ -94,7 +94,7 @@ else
   if [[ -z "$MCP_SETTING" || "$MCP_SETTING" == "none" || "$MCP_SETTING" == "false" ]]; then
     KNOWN_MCP=()
   elif [[ "$MCP_SETTING" == "all" || "$MCP_SETTING" == "true" ]]; then
-    KNOWN_MCP=(aftershoot-mcp arxiv bestiary chrome-devtools github linear playwright)
+    KNOWN_MCP=(aftershoot-mcp arxiv atlassian bestiary chrome-devtools github linear playwright)
   else
     IFS=, read -ra KNOWN_MCP <<< "$MCP_SETTING"
   fi

@@ -41,12 +41,13 @@ default; enable only what you need in `.env` before `./scripts/up.sh`:
 # git's credential cache without passing it as a normal container env var
 GITHUB_READ_TOKEN=github_pat_...
 
-AI_HARNESSES_MCP=github,bestiary   # or: none / all
-GITHUB_MCP_TOKEN=github_pat_...    # optional MCP token; exposed to MCP processes
+AI_HARNESSES_MCP=github,bestiary,atlassian   # or: none / all
+GITHUB_MCP_TOKEN=github_pat_...               # optional MCP token; exposed to MCP processes
 ```
 
-Use a **fine-grained, repo-scoped, read-only GitHub PAT** with `Metadata: read`
-and `Contents: read` for clones. Add `Issues: read` and `Pull requests: read`
+Atlassian uses its official browser-based OAuth flow, so it needs no token in
+this environment file. Use a **fine-grained, repo-scoped, read-only GitHub PAT**
+with `Metadata: read` and `Contents: read` for clones. Add `Issues: read` and `Pull requests: read`
 only if you want read-only `gh` issue/PR commands. If you want agents to clone
 any private repo in your account, grant it read access to all repositories.
 Pushes with that token should fail. `up.sh` and `shell.sh` auto-prime HTTPS

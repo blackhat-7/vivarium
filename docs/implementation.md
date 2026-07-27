@@ -73,7 +73,7 @@ Optional build flags:
 - `INSTALL_PASEO=false` — install paseo
 - `INSTALL_BESTIARY=false` — install bestiary from `BESTIARY_REF`
 - `AI_HARNESSES_REF=main` — ai-harnesses ref to bake into the image
-- `AI_HARNESSES_MCP=none` — `none`, `all`, or comma-list such as `github,bestiary`
+- `AI_HARNESSES_MCP=none` — `none`, `all`, or comma-list such as `github,bestiary,atlassian`
 
 Runtime UI flags:
 
