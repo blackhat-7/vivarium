@@ -51,6 +51,7 @@ From `compose.yaml` for each profile:
 - `mem_limit: 4g`
 - `cpus: 2.0`
 - `pids_limit: 512`
+- Docker's init process reaps orphaned children before they can exhaust the PID limit
 - no Docker socket mount
 - no privileged mode
 

@@ -54,6 +54,9 @@ services:
     cpus: 2.0
     pids_limit: 512
 
+    # Reap orphaned agent/UI processes so zombies cannot exhaust pids_limit.
+    init: true
+
     # restart policy — autopilot friendly, survives host reboots.
     # change to "no" if you'd rather start manually.
     restart: unless-stopped
